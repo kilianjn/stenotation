@@ -24,7 +24,7 @@ Einmalig unter **Settings → Pages** die Quelle wählen (das geht nur mit
 Admin-Rechten am Repository, der Workflow kann Pages nicht selbst aktivieren):
 
 - **Source: GitHub Actions** – danach veröffentlicht der Workflow in
-  `.github/workflows/pages.yml` bei jedem Push, oder
+  `.github/workflows/pages.yml` bei jedem Push auf `main`, oder
 - **Source: Deploy from a branch** – Branch wählen, Ordner `/ (root)`.
 
 Danach ist die Seite unter `https://kilianjn.github.io/stenotation/` erreichbar.

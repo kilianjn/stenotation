@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - claude/github-pages-upload-0z1aqv
   workflow_dispatch:
 
 permissions:
