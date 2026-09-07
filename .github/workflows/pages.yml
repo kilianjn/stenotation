@@ -25,11 +25,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
-        with:
-          # Create the Pages site if it does not exist yet.
-          enablement: true
+      - name: Collect the site
+        run: |
+          mkdir -p _site
+          cp index.html _site/
+          touch _site/.nojekyll
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: .
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v4
