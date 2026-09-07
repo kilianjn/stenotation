@@ -1,0 +1,1209 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Stenodiktat – Diktate nach Silben pro Minute</title>
+<meta name="description" content="Beliebigen Text im gewählten Tempo vorlesen lassen und stenografisch mitschreiben.">
+<meta name="theme-color" content="#E8EBF0">
+<script type="importmap">
+{"imports":{"onnxruntime-web/wasm":"https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/esm/ort.wasm.min.js"}}
+</script>
+<style>
+  :root{
+    --paper:#E8EBF0;
+    --paper-hi:#F3F5F8;
+    --rule:#C2CCDA;
+    --ink:#16202E;
+    --ink-soft:#5C6A7C;
+    --ink-faint:#9AA6B5;
+    --pen:#243F7E;
+    --pen-lite:#3C60B0;
+    --pencil:#A8382A;
+    --line-h:44px;
+    --font-ui:ui-sans-serif,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --font-read:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--paper);color:var(--ink);font-family:var(--font-ui);
+    font-size:16px;line-height:1.5;-webkit-font-smoothing:antialiased;padding:0 0 48px;
+  }
+  .wrap{max-width:860px;margin:0 auto;padding:0 20px}
+
+  header{
+    display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;
+    padding:26px 0 18px;border-bottom:1px solid var(--rule);margin-bottom:26px;
+  }
+  h1{font-family:var(--font-read);font-weight:400;font-size:27px;letter-spacing:.005em;margin:0}
+  h1 .mark{color:var(--pen)}
+  .tagline{color:var(--ink-soft);font-size:14px;margin:4px 0 0}
+  .langsw{display:flex;gap:0;border:1px solid var(--rule);border-radius:3px;overflow:hidden;flex:none}
+  .langsw button{
+    background:transparent;border:0;padding:7px 12px;font-size:13px;font-weight:600;
+    color:var(--ink-soft);letter-spacing:.04em;
+  }
+  .langsw button + button{border-left:1px solid var(--rule)}
+  .langsw button[aria-pressed="true"]{background:var(--ink);color:var(--paper-hi)}
+
+  .stage{
+    background:var(--paper-hi);border:1px solid var(--rule);border-radius:3px;
+    box-shadow:0 1px 0 rgba(22,32,46,.05);overflow:hidden;
+  }
+  .stage-head{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:12px 18px;border-bottom:1px solid var(--rule);
+    font-size:13px;color:var(--ink-soft);font-variant-numeric:tabular-nums;
+  }
+  .stage-head .now{display:inline-flex;align-items:center;gap:8px;font-weight:600;color:var(--ink)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--ink-faint);flex:none}
+  .dot.live{background:var(--pencil)}
+  .dot.hold{background:var(--pen)}
+
+  .paper{
+    position:relative;padding:14px 22px 26px;max-height:46vh;min-height:200px;overflow-y:auto;
+    background-image:linear-gradient(var(--paper-hi) calc(var(--line-h) - 1px), var(--rule) 1px);
+    background-size:100% var(--line-h);background-position:0 14px;
+  }
+  .paper::before{content:"";position:absolute;top:0;bottom:0;left:0;width:3px;
+    background:linear-gradient(var(--pen),var(--pen-lite));opacity:.55}
+  .text{font-family:var(--font-read);font-size:21px;line-height:var(--line-h);color:var(--ink)}
+  .w{padding:1px 2px;border-radius:2px;cursor:pointer}
+  .w.done{color:var(--ink-faint)}
+  .w.now{background:var(--pen);color:var(--paper-hi);box-shadow:0 0 0 3px rgba(36,63,126,.16)}
+  .para{height:var(--line-h)}
+  .empty{color:var(--ink-faint);font-family:var(--font-ui);font-size:15px;line-height:1.6;margin:0}
+
+  .bar{height:3px;background:var(--rule);position:relative}
+  .bar i{position:absolute;inset:0 auto 0 0;width:0;background:var(--pencil);display:block}
+
+  .transport{display:flex;gap:10px;align-items:stretch;padding:16px 18px;flex-wrap:wrap}
+  button{font:inherit;color:inherit;cursor:pointer}
+  .btn{
+    background:transparent;border:1px solid var(--rule);border-radius:3px;padding:11px 16px;
+    font-size:15px;color:var(--ink);display:inline-flex;align-items:center;gap:8px;
+  }
+  .btn:hover{border-color:var(--ink-soft)}
+  .btn:active{background:rgba(36,63,126,.07)}
+  .btn.primary{background:var(--pen);border-color:var(--pen);color:#fff;min-width:158px;justify-content:center;font-weight:600}
+  .btn.primary:hover{background:var(--pen-lite);border-color:var(--pen-lite)}
+  .btn:disabled{opacity:.4;cursor:default}
+  .btn .k{font-size:11px;color:var(--ink-faint);border:1px solid var(--rule);border-radius:2px;padding:0 4px;line-height:16px}
+  .spacer{flex:1}
+  :focus-visible{outline:2px solid var(--pencil);outline-offset:2px}
+
+  .tempo{margin-top:22px;padding:20px 22px;background:var(--paper-hi);border:1px solid var(--rule);border-radius:3px}
+  .tempo-top{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;flex-wrap:wrap}
+  .reading{display:flex;align-items:baseline;gap:10px}
+  .reading b{font-family:var(--font-read);font-size:52px;font-weight:400;line-height:.9;
+    font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+  .unitpick{display:flex;flex-direction:column;gap:2px;align-items:flex-start}
+  .unitpick button{
+    background:transparent;border:0;padding:1px 0;font-size:13.5px;color:var(--ink-faint);text-align:left;
+  }
+  .unitpick button[aria-pressed="true"]{color:var(--ink);font-weight:600}
+  .presets{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{background:transparent;border:1px solid var(--rule);border-radius:99px;padding:5px 12px;
+    font-size:13px;color:var(--ink-soft);font-variant-numeric:tabular-nums}
+  .chip:hover{border-color:var(--ink-soft);color:var(--ink)}
+  .chip[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:var(--paper-hi)}
+
+  input[type=range]{-webkit-appearance:none;appearance:none;width:100%;background:transparent;margin:20px 0 4px}
+  input[type=range]::-webkit-slider-runnable-track{height:2px;background:var(--rule)}
+  input[type=range]::-moz-range-track{height:2px;background:var(--rule)}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;
+    background:var(--pen);border:3px solid var(--paper-hi);margin-top:-9px;box-shadow:0 0 0 1px var(--rule)}
+  input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:var(--pen);
+    border:3px solid var(--paper-hi);box-shadow:0 0 0 1px var(--rule)}
+  .scale{display:flex;justify-content:space-between;color:var(--ink-faint);font-size:12px;font-variant-numeric:tabular-nums}
+
+  section.block{margin-top:26px}
+  .block h2{font-family:var(--font-read);font-weight:400;font-size:19px;margin:0 0 10px}
+  textarea{
+    width:100%;min-height:160px;resize:vertical;font-family:var(--font-read);font-size:17px;
+    line-height:1.65;color:var(--ink);background:var(--paper-hi);border:1px solid var(--rule);
+    border-radius:3px;padding:14px 16px;
+  }
+  textarea:focus{outline:none;border-color:var(--pen);box-shadow:0 0 0 3px rgba(36,63,126,.12)}
+  .meta{display:flex;gap:22px;flex-wrap:wrap;margin-top:10px;color:var(--ink-soft);font-size:14px;font-variant-numeric:tabular-nums}
+  .meta b{color:var(--ink);font-weight:600}
+  .textbar{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+
+  .opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px 24px;margin-top:4px}
+  label.opt{display:flex;gap:10px;align-items:flex-start;font-size:15px;cursor:pointer}
+  label.opt input{margin:4px 0 0;accent-color:var(--pen);width:16px;height:16px;flex:none}
+  label.opt em{display:block;font-style:normal;color:var(--ink-soft);font-size:13px;line-height:1.4}
+  .field{display:flex;flex-direction:column;gap:6px;font-size:14px;color:var(--ink-soft)}
+  select{font:inherit;font-size:15px;color:var(--ink);background:var(--paper-hi);
+    border:1px solid var(--rule);border-radius:3px;padding:9px 10px;max-width:100%}
+  .note{margin-top:26px;padding-top:18px;border-top:1px solid var(--rule);
+    color:var(--ink-soft);font-size:13.5px;line-height:1.6}
+  .warn{background:#F7E9E6;border:1px solid #E0B7AF;color:#7A2A20;padding:12px 14px;
+    border-radius:3px;font-size:14px;margin-top:14px}
+  .hide{display:none !important}
+  .wide{grid-column:1/-1}
+  .piperstate{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:2px}
+  .piperstate .btn{padding:7px 12px;font-size:14px}
+  #piperStatus{font-size:13.5px;color:var(--ink-soft);font-variant-numeric:tabular-nums}
+  .minibar{height:2px;background:var(--rule);position:relative;margin-top:2px}
+  .minibar i{position:absolute;inset:0 auto 0 0;width:0;background:var(--pen);display:block}
+  .hint{font-style:normal;color:var(--ink-faint);font-size:13px;line-height:1.45}
+  @media (max-width:560px){
+    .reading b{font-size:44px}
+    .btn.primary{min-width:100%;order:-1}
+    .paper{padding:14px 16px 26px;max-height:40vh}
+    .text{font-size:19px}
+    .btn .k{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none !important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div>
+      <h1><span id="brandA">Steno</span><span class="mark" id="brandB">diktat</span></h1>
+      <p class="tagline" id="tagline"></p>
+    </div>
+    <div class="langsw" id="langsw">
+      <button data-lang="de">Deutsch</button>
+      <button data-lang="en">English</button>
+    </div>
+  </header>
+
+  <div class="stage">
+    <div class="stage-head">
+      <span class="now"><span class="dot" id="dot"></span><span id="statusText"></span></span>
+      <span id="clock">00:00 / 00:00</span>
+    </div>
+    <div class="paper" id="paper">
+      <div class="text" id="text"></div>
+    </div>
+    <div class="bar"><i id="progress"></i></div>
+    <div class="transport">
+      <button class="btn primary" id="playBtn"></button>
+      <button class="btn" id="prevBtn">◀ <span data-i18n="word"></span> <span class="k">←</span></button>
+      <button class="btn" id="nextBtn"><span data-i18n="word"></span> ▶ <span class="k">→</span></button>
+      <span class="spacer"></span>
+      <button class="btn" id="resetBtn" data-i18n="reset"></button>
+    </div>
+  </div>
+
+  <div class="tempo">
+    <div class="tempo-top">
+      <div class="reading">
+        <b id="tempoOut">100</b>
+        <div class="unitpick" id="unitpick">
+          <button data-unit="syl" data-i18n="unitSyl"></button>
+          <button data-unit="word" data-i18n="unitWord"></button>
+        </div>
+      </div>
+      <div class="presets" id="presets"></div>
+    </div>
+    <input type="range" id="tempo" min="20" max="300" step="5" value="100">
+    <div class="scale"><span id="scaleMin">20</span><span id="scaleMid">160</span><span id="scaleMax">300</span></div>
+  </div>
+
+  <section class="block">
+    <h2 data-i18n="hText"></h2>
+    <textarea id="input" spellcheck="false"></textarea>
+    <div class="meta">
+      <span><b id="mWords">0</b> <span data-i18n="words"></span></span>
+      <span><b id="mSyl">0</b> <span data-i18n="syllables"></span></span>
+      <span><span data-i18n="duration"></span> <b id="mDur">00:00</b></span>
+    </div>
+    <div class="textbar">
+      <button class="btn" id="sampleBtn" data-i18n="sample"></button>
+      <button class="btn" id="clearBtn" data-i18n="clear"></button>
+    </div>
+  </section>
+
+  <section class="block">
+    <h2 data-i18n="hSettings"></h2>
+    <div class="opts">
+      <label class="opt"><input type="checkbox" id="optCount" checked><span><span data-i18n="optCount"></span><em data-i18n="optCountHint"></em></span></label>
+      <label class="opt"><input type="checkbox" id="optPunct" checked><span><span data-i18n="optPunct"></span><em data-i18n="optPunctHint"></em></span></label>
+      <label class="opt"><input type="checkbox" id="optSpeak"><span><span data-i18n="optSpeak"></span><em data-i18n="optSpeakHint"></em></span></label>
+      <label class="opt"><input type="checkbox" id="optFollow" checked><span><span data-i18n="optFollow"></span><em data-i18n="optFollowHint"></em></span></label>
+      <div class="field">
+        <label for="textlang" data-i18n="textLang"></label>
+        <select id="textlang">
+          <option value="auto"></option>
+          <option value="de"></option>
+          <option value="en"></option>
+        </select>
+        <em style="font-style:normal;color:var(--ink-faint);font-size:13px" id="detected"></em>
+      </div>
+      <div class="field">
+        <label for="engine" data-i18n="engine"></label>
+        <select id="engine">
+          <option value="system"></option>
+          <option value="piper"></option>
+        </select>
+      </div>
+      <div class="field" id="voiceBox">
+        <label for="voice" data-i18n="voice"></label>
+        <select id="voice"></select>
+      </div>
+      <div class="field wide hide" id="piperBox">
+        <label for="piperVoice" data-i18n="piperVoice"></label>
+        <select id="piperVoice"></select>
+        <div class="piperstate">
+          <button class="btn" id="piperLoad" data-i18n="loadVoice"></button>
+          <button class="btn" id="piperCheck" data-i18n="checkNet"></button>
+          <span id="piperStatus"></span>
+        </div>
+        <div class="minibar"><i id="piperBar"></i></div>
+        <em class="hint" data-i18n="piperHint"></em>
+      </div>
+    </div>
+    <div class="warn hide" id="noTTS" data-i18n="noTTS"></div>
+  </section>
+
+  <p class="note" id="note"></p>
+
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============ Übersetzungen ============ */
+const I18N = {
+  de:{
+    docTitle:"Stenodiktat – Diktate nach Silben pro Minute",
+    brandA:"Steno", brandB:"diktat",
+    tagline:"Beliebigen Text im gewählten Tempo vorlesen lassen und mitschreiben.",
+    ready:"Bereit", running:"Diktat läuft", paused:"Pausiert", done:"Diktat beendet", attention:"Achtung",
+    start:"Diktat starten", pause:"Pause", resume:"Weiter", again:"Noch einmal", abort:"Abbrechen",
+    word:"Wort", reset:"Zurück an den Anfang",
+    unitSyl:"Silben pro Minute", unitWord:"Wörter pro Minute",
+    hText:"Diktattext", placeholder:"Text hier einfügen …",
+    words:"Wörter", syllables:"Silben", duration:"Dauer",
+    sample:"Beispieltext einsetzen", clear:"Text leeren",
+    hSettings:"Einstellungen",
+    optCount:"Vorzähler „drei – zwei – eins“", optCountHint:"Drei Sekunden Vorlauf vor dem ersten Wort.",
+    optPunct:"Pause an Satzzeichen", optPunctHint:"Kurz bei Komma, länger am Satzende – wie beim echten Diktat.",
+    optSpeak:"Satzzeichen ansagen", optSpeakHint:"Liest „Komma“ und „Punkt“ mit vor.",
+    optFollow:"Text mitlaufen lassen", optFollowHint:"Scrollt automatisch zum aktuellen Wort.",
+    textLang:"Sprache des Diktattexts", voice:"Stimme",
+    engine:"Stimmenquelle", engineSystem:"Systemstimme des Geräts", enginePiper:"Piper – neuronale Stimme im Browser",
+    piperVoice:"Piper-Stimme", loadVoice:"Stimme laden",
+    piperIdle:"Noch nicht geladen", piperReady:"Stimme bereit",
+    piperDownload:p=>"Stimme wird geladen … "+p+" %",
+    piperPrep:(a,b)=>"Diktat wird vorbereitet … "+a+" von "+b,
+    piperDone:"Diktat vorbereitet",
+    piperFail:"Piper lässt sich nicht laden – es wird die Systemstimme benutzt.",
+    checkNet:"Verbindung prüfen", checking:"Wird geprüft …",
+    noCache:"Safari kann das Modell nicht dauerhaft ablegen – es wird beim nächsten Besuch neu geladen.",
+    piperHint:"Einmaliger Download, danach offline und auf jedem Gerät identisch. Der Text wird vor dem Diktat Wort für Wort vorgerendert.",
+    auto:"Automatisch erkennen", de:"Deutsch", en:"Englisch",
+    detected:l=>"Erkannt: "+(l==="de"?"Deutsch":"Englisch"),
+    empty:"Der Diktattext erscheint hier. Füge unten einen Text ein – dann Diktat starten.",
+    loading:"Wird geladen …", noVoice:"Keine passende Stimme gefunden",
+    noTTS:"Dieser Browser stellt keine Sprachausgabe bereit. In Chrome, Edge oder Safari funktioniert das Diktat; auf Mobilgeräten muss der Ton eingeschaltet sein.",
+    note:"Tastatur: Leertaste startet und pausiert, Pfeil links und rechts springen wortweise. Ein Klick auf ein Wort setzt die Vorlesestelle dorthin. Silben werden nach Vokalgruppen der jeweiligen Sprache gezählt, Zahlen vorher ausgeschrieben. Im Silbenmodus bekommt jedes Wort genau so viel Zeit, wie es Silben hat; im Wortmodus erhält jedes Wort dieselbe Zeit.",
+    countdown:["drei","zwei","eins"],
+    punct:{',':"Komma",'.':"Punkt",'!':"Ausrufezeichen",'?':"Fragezeichen",';':"Semikolon",':':"Doppelpunkt"},
+    symbols:{'%':" Prozent",'€':" Euro",'$':" Dollar",'&':" und",'§':" Paragraf",'+':" plus",'=':" gleich",'°':" Grad"}
+  },
+  en:{
+    docTitle:"Shorthand Dictation – practise at any syllable rate",
+    brandA:"Short", brandB:"hand",
+    tagline:"Have any text read aloud at the pace you choose, and write it down.",
+    ready:"Ready", running:"Dictating", paused:"Paused", done:"Dictation finished", attention:"Get ready",
+    start:"Start dictation", pause:"Pause", resume:"Resume", again:"Run again", abort:"Cancel",
+    word:"word", reset:"Back to the start",
+    unitSyl:"syllables per minute", unitWord:"words per minute",
+    hText:"Dictation text", placeholder:"Paste your text here …",
+    words:"words", syllables:"syllables", duration:"Duration",
+    sample:"Insert sample text", clear:"Clear text",
+    hSettings:"Settings",
+    optCount:"Count in “three – two – one”", optCountHint:"Three seconds of lead-in before the first word.",
+    optPunct:"Pause at punctuation", optPunctHint:"Short at commas, longer at full stops, as in a real dictation.",
+    optSpeak:"Read punctuation aloud", optSpeakHint:"Says “comma” and “full stop” as they come up.",
+    optFollow:"Follow the text", optFollowHint:"Scrolls to the current word automatically.",
+    textLang:"Language of the text", voice:"Voice",
+    engine:"Voice source", engineSystem:"System voice of this device", enginePiper:"Piper – neural voice in the browser",
+    piperVoice:"Piper voice", loadVoice:"Download voice",
+    piperIdle:"Not downloaded yet", piperReady:"Voice ready",
+    piperDownload:p=>"Downloading voice … "+p+" %",
+    piperPrep:(a,b)=>"Preparing dictation … "+a+" of "+b,
+    piperDone:"Dictation prepared",
+    piperFail:"Piper could not be loaded – falling back to the system voice.",
+    checkNet:"Check connection", checking:"Checking …",
+    noCache:"Safari cannot store the model permanently, so it will be downloaded again next visit.",
+    piperHint:"A one-off download; after that it works offline and sounds identical on every device. The text is rendered word by word before the dictation starts.",
+    auto:"Detect automatically", de:"German", en:"English",
+    detected:l=>"Detected: "+(l==="de"?"German":"English"),
+    empty:"Your dictation text appears here. Paste a text below, then start the dictation.",
+    loading:"Loading …", noVoice:"No matching voice found",
+    noTTS:"This browser has no speech output. Chrome, Edge and Safari all work; on a phone the ringer has to be on.",
+    note:"Keyboard: space starts and pauses, left and right arrows step through the words. Click any word to move the reading point there. Syllables are counted from the vowel groups of the chosen language, and numbers are spelled out first. In syllable mode every word gets exactly as much time as it has syllables; in word mode every word gets the same slice of time.",
+    countdown:["three","two","one"],
+    punct:{',':"comma",'.':"full stop",'!':"exclamation mark",'?':"question mark",';':"semicolon",':':"colon"},
+    symbols:{'%':" percent",'€':" euros",'$':" dollars",'&':" and",'§':" section",'+':" plus",'=':" equals",'°':" degrees"}
+  }
+};
+
+const SAMPLE = {
+de:"Sehr geehrte Damen und Herren, wir danken Ihnen für Ihr Schreiben vom 14. März und bestätigen Ihnen gern den Eingang der Unterlagen. Nach einer ersten Durchsicht können wir Ihnen mitteilen, dass die eingereichten Zahlen vollständig sind und keiner weiteren Ergänzung bedürfen.\n\nDer Umsatz des vergangenen Geschäftsjahres lag bei 1250000 Euro und damit um 12 Prozent über dem Vorjahr. Besonders erfreulich entwickelte sich das Geschäft mit kleineren Betrieben, die inzwischen fast ein Drittel unseres Auftragsbestandes ausmachen.\n\nWir schlagen vor, die weiteren Einzelheiten in einem persönlichen Gespräch zu klären. Für einen Termin in der zweiten Aprilhälfte stehen wir Ihnen jederzeit zur Verfügung. Mit freundlichen Grüßen.",
+en:"Dear Sir or Madam, thank you for your letter of 14 March, and we are glad to confirm that the documents have reached us safely. Having looked through them once, we can tell you that the figures are complete and need no further additions.\n\nTurnover for the past financial year came to 1250000 pounds, which is 12 percent above the previous year. Trade with smaller firms was particularly pleasing, and it now accounts for almost a third of our order book.\n\nWe suggest settling the remaining details in a meeting. Any date in the second half of April would suit us. Yours faithfully."
+};
+
+/* ============ Silbenzählung ============ */
+const DE_VOWELS = 'aeiouyäöü';
+const DE_DIGRAPHS = ['au','äu','eu','ei','ai','ie','oi','ui','ay','ey','aa','ee','oo','ah','eh','ih','oh','uh','äh','öh','üh'];
+
+function silbenDe(wort){
+  let w = String(wort).toLowerCase().replace(/[^a-zäöüßy]/g,'');
+  if(!w) return 0;
+  if(w[0]==='y' && DE_VOWELS.includes(w[1]||'')) w = w.slice(1);
+  let n=0,i=0;
+  while(i<w.length){
+    if(DE_VOWELS.includes(w[i])){
+      if(DE_DIGRAPHS.includes(w.substr(i,2))){ n++; i+=2; } else { n++; i++; }
+    } else i++;
+  }
+  return Math.max(1,n);
+}
+
+const EN_AUSNAHMEN = {
+  business:2, businesses:3, friend:1, friends:1, people:2, every:2, everyone:3, everything:3,
+  science:2, scientist:3, scientific:4, different:3, difference:3, interesting:4, evening:2,
+  several:3, family:3, camera:3, average:3, chocolate:3, restaurant:3, vegetable:4,
+  comfortable:4, temperature:4, literature:4, february:4, january:4, area:3, idea:3, ideas:3,
+  being:2, doing:2, going:2, seeing:2, create:2, created:3, creating:3
+};
+
+function silbenEn(wort){
+  let w = String(wort).toLowerCase().replace(/[^a-z]/g,'');
+  if(!w) return 0;
+  if(EN_AUSNAHMEN[w]) return EN_AUSNAHMEN[w];
+  if(w.length<=3) return 1;
+  w = w.replace(/qu/g,'q');                                     // „qu“ wirkt wie ein Konsonant
+  w = w.replace(/([ct])ious/g,'$1us').replace(/([ct])ion/g,'$1on')
+       .replace(/([ct])ial/g,'$1al').replace(/([ct])ien/g,'$1en');
+  if(/[^td]ed$/.test(w)) w = w.slice(0,-2)+'d';                 // walked → walkd
+  if(/[^sxzcgh]es$/.test(w)) w = w.slice(0,-2)+'s';             // makes → maks
+  if(/[^aeiou]e$/.test(w) && !/[^aeiou]le$/.test(w)) w = w.slice(0,-1);
+  if(w[0]==='y') w = w.slice(1);
+  const gruppen = w.match(/[aeiouy]+/g) || [];
+  let n = 0;
+  gruppen.forEach((g,i) => {
+    let c = 1;
+    if(g.length >= 3 && !/^(eau|ieu|oeu|eye|aye)$/.test(g)) c = 2;              // pre-vi-ous
+    else if(g.length === 2 && i === gruppen.length-1 && gruppen.length > 1
+            && w.endsWith(g) && /^(ia|ea|eo|io|ua)$/.test(g)) c = 2;            // ra-di-o
+    n += c;
+  });
+  if(/[^aeiou]ie[nt]/.test(w)) n += 1;                                          // cli-ent, qui-et
+  return Math.max(1, n);
+}
+
+const silben = (w,l) => l==='en' ? silbenEn(w) : silbenDe(w);
+const silbenSatz = (s,l) => s.split(/\s+/).filter(Boolean).reduce((a,w)=>a+silben(w,l),0);
+
+/* ============ Zahlwörter ============ */
+const DE_ONES=['null','eins','zwei','drei','vier','fünf','sechs','sieben','acht','neun','zehn','elf','zwölf','dreizehn','vierzehn','fünfzehn','sechzehn','siebzehn','achtzehn','neunzehn'];
+const DE_TENS=['','zehn','zwanzig','dreißig','vierzig','fünfzig','sechzig','siebzig','achtzig','neunzig'];
+const de100 = n => n<20 ? DE_ONES[n] : (n%10 ? (n%10===1?'ein':DE_ONES[n%10])+'und'+DE_TENS[Math.floor(n/10)] : DE_TENS[Math.floor(n/10)]);
+const de1000 = n => n<100 ? de100(n) : (Math.floor(n/100)===1?'ein':DE_ONES[Math.floor(n/100)])+'hundert'+(n%100?de100(n%100):'');
+function zahlwortDe(n){
+  n = Math.floor(Math.abs(n));
+  if(n===0) return 'null';
+  if(n>=1100 && n<=1999) return de100(Math.floor(n/100))+'hundert'+(n%100?de100(n%100):'');
+  let s='';
+  const mrd=Math.floor(n/1e9); n%=1e9;
+  const mio=Math.floor(n/1e6); n%=1e6;
+  const tsd=Math.floor(n/1000), rest=n%1000;
+  if(mrd) s += (mrd===1?'eine Milliarde ':de1000(mrd)+' Milliarden ');
+  if(mio) s += (mio===1?'eine Million ':de1000(mio)+' Millionen ');
+  if(tsd) s += (tsd===1?'ein':de1000(tsd))+'tausend';
+  if(rest) s += de1000(rest);
+  return s.trim();
+}
+
+const EN_ONES=['zero','one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen'];
+const EN_TENS=['','ten','twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety'];
+const en100 = n => n<20 ? EN_ONES[n] : EN_TENS[Math.floor(n/10)] + (n%10 ? ' '+EN_ONES[n%10] : '');
+const en1000 = n => n<100 ? en100(n) : EN_ONES[Math.floor(n/100)]+' hundred'+(n%100?' and '+en100(n%100):'');
+function zahlwortEn(n){
+  n = Math.floor(Math.abs(n));
+  if(n===0) return 'zero';
+  if(n>=1100 && n<=1999) return en100(Math.floor(n/100))+(n%100? ' '+en100(n%100) : ' hundred');
+  const teile=[];
+  const bil=Math.floor(n/1e9); n%=1e9;
+  const mil=Math.floor(n/1e6); n%=1e6;
+  const tho=Math.floor(n/1000), rest=n%1000;
+  if(bil) teile.push(en1000(bil)+' billion');
+  if(mil) teile.push(en1000(mil)+' million');
+  if(tho) teile.push(en1000(tho)+' thousand');
+  if(rest) teile.push(en1000(rest));
+  return teile.join(' ');
+}
+const zahlwort = (n,l) => l==='en' ? zahlwortEn(n) : zahlwortDe(n);
+
+/* ============ Sprachenerkennung ============ */
+const DE_MARKER = /\b(der|die|das|und|ist|nicht|ein|eine|einen|mit|sich|auf|für|dem|den|von|zu|wir|sie|ich|auch|werden|haben|wird)\b/gi;
+const EN_MARKER = /\b(the|and|is|are|of|to|in|that|it|for|with|you|we|not|this|have|will|from|they|which)\b/gi;
+function erkenneSprache(text){
+  if(!text.trim()) return 'de';
+  const de = (text.match(DE_MARKER)||[]).length + (text.match(/[äöüß]/gi)||[]).length*2;
+  const en = (text.match(EN_MARKER)||[]).length;
+  return en > de ? 'en' : 'de';
+}
+
+/* ============ Wort in Sprechform ============ */
+function sprechform(roh, lang){
+  const T = I18N[lang];
+  let s = roh.replace(/[«»„“”"()\[\]]/g,'');
+  s = s.replace(/[%€$&§+=°]/g, m => T.symbols[m] || m);
+  if(lang==='en'){
+    s = s.replace(/(\d{1,3})(?:,(\d{3}))+(?![\d])/g, m => m.replace(/,/g,''));
+    s = s.replace(/(\d+)\.(\d+)/g, (m,a,b) => zahlwortEn(+a)+' point '+b.split('').map(d=>EN_ONES[+d]).join(' '));
+  } else {
+    s = s.replace(/(\d{1,3})(?:\.(\d{3}))+(?![\d])/g, m => m.replace(/\./g,''));
+    s = s.replace(/(\d+),(\d+)/g, (m,a,b) => zahlwortDe(+a)+' Komma '+b.split('').map(d=>DE_ONES[+d]).join(' '));
+  }
+  s = s.replace(/\d+/g, m => zahlwort(+m, lang));
+  return s.replace(/\s+/g,' ').trim();
+}
+
+/* ============ Text zerlegen ============ */
+function tokenize(text, lang){
+  const T = I18N[lang], out = [];
+  const absaetze = text.replace(/\r/g,'').split(/\n/);
+  absaetze.forEach((abs, ai) => {
+    const woerter = abs.split(/\s+/).filter(Boolean);
+    woerter.forEach((roh, wi) => {
+      const gesprochen = sprechform(roh, lang);
+      const kern = gesprochen.replace(/[.,;:!?…–—-]+$/,'').trim();
+      const endzeichen = (roh.match(/[.,;:!?…]+$/) || [''])[0];
+      let pause = 0;
+      if(!/^\d{1,2}\.$/.test(roh)){                       // „14.“ ist kein Satzende
+        if(/[.!?…]/.test(endzeichen)) pause = 2.5;
+        else if(/[,;:]/.test(endzeichen)) pause = 1;
+      }
+      const sprech = kern || gesprochen || roh;
+      out.push({
+        roh, sprech,
+        zeichen: endzeichen ? (T.punct[endzeichen[0]] || '') : '',
+        syl: Math.max(1, silbenSatz(sprech, lang)),
+        pause,
+        absatzEnde: wi === woerter.length-1 && ai < absaetze.length-1
+      });
+    });
+  });
+  return out;
+}
+
+/* ============ Zustand ============ */
+const $ = id => document.getElementById(id);
+const el = {
+  paper:$('paper'), text:$('text'), status:$('statusText'), dot:$('dot'), clock:$('clock'),
+  progress:$('progress'), play:$('playBtn'), prev:$('prevBtn'), next:$('nextBtn'), reset:$('resetBtn'),
+  tempo:$('tempo'), tempoOut:$('tempoOut'), presets:$('presets'), unitpick:$('unitpick'),
+  scaleMin:$('scaleMin'), scaleMid:$('scaleMid'), scaleMax:$('scaleMax'),
+  input:$('input'), mWords:$('mWords'), mSyl:$('mSyl'), mDur:$('mDur'),
+  sample:$('sampleBtn'), clear:$('clearBtn'), langsw:$('langsw'),
+  optCount:$('optCount'), optPunct:$('optPunct'), optSpeak:$('optSpeak'), optFollow:$('optFollow'),
+  textlang:$('textlang'), detected:$('detected'), voice:$('voice'), noTTS:$('noTTS'), note:$('note'),
+  engine:$('engine'), voiceBox:$('voiceBox'), piperBox:$('piperBox'),
+  piperVoice:$('piperVoice'), piperLoad:$('piperLoad'), piperCheck:$('piperCheck')
+};
+
+const PRESETS = { syl:[40,60,80,100,140,180,240], word:[30,50,70,90,110,140,180] };
+const GRENZEN = { syl:[20,300], word:[10,200] };
+
+let uiLang = (navigator.language||'de').toLowerCase().startsWith('en') ? 'en' : 'de';
+let textLangWahl = 'auto', textLang = 'de';
+let einheit = 'syl';
+let engine = 'system';
+let tempo = 100;
+let tokens = [], spans = [], cum = [0];
+let idx = 0, laeuft = false, zaehltVor = false, pausiert = false;
+let uhrStart = 0, timer = null, rafId = null, utterSeq = 0;
+let sps = 5.0;
+const synth = window.speechSynthesis;
+let stimmen = [], stimme = null;
+
+const T = () => I18N[uiLang];
+
+/* ============ Oberfläche übersetzen ============ */
+function wendeSpracheAn(){
+  const t = T();
+  document.documentElement.lang = uiLang;
+  document.title = t.docTitle;
+  $('brandA').textContent = t.brandA;
+  $('brandB').textContent = t.brandB;
+  $('tagline').textContent = t.tagline;
+  document.querySelectorAll('[data-i18n]').forEach(n => { n.textContent = t[n.dataset.i18n] || ''; });
+  [...el.langsw.children].forEach(b => b.setAttribute('aria-pressed', b.dataset.lang === uiLang));
+  [...el.unitpick.children].forEach(b => b.setAttribute('aria-pressed', b.dataset.unit === einheit));
+  el.input.placeholder = t.placeholder;
+  el.engine.options[0].textContent = t.engineSystem;
+  el.engine.options[1].textContent = t.enginePiper;
+  if(!P.ready && !P.busy) piperStatus(t.piperIdle, 0);
+  else if(P.ready && !P.busy) piperStatus(P.prepared ? t.piperDone : t.piperReady, 1);
+  el.textlang.options[0].textContent = t.auto;
+  el.textlang.options[1].textContent = t.de;
+  el.textlang.options[2].textContent = t.en;
+  el.note.textContent = t.note;
+  el.noTTS.textContent = t.noTTS;
+  zeichnePresets();
+  if(!tokens.length) zeichneText();
+  el.detected.textContent = textLangWahl === 'auto' && tokens.length ? t.detected(textLang) : '';
+  knopfText();
+  if(!laeuft && !zaehltVor) status(idx>0 ? t.paused : t.ready, idx>0 ? 'hold' : '');
+  ladeStimmen();
+}
+
+function knopfText(){
+  const t = T();
+  el.play.textContent = laeuft ? t.pause : zaehltVor ? t.abort
+    : idx >= tokens.length && tokens.length ? t.again
+    : (pausiert || idx > 0) ? t.resume : t.start;
+}
+
+function zeichnePresets(){
+  el.presets.innerHTML = '';
+  PRESETS[einheit].forEach(v => {
+    const b = document.createElement('button');
+    b.className = 'chip'; b.dataset.tempo = v; b.textContent = v;
+    b.setAttribute('aria-pressed', v === tempo);
+    el.presets.appendChild(b);
+  });
+  const [lo,hi] = GRENZEN[einheit];
+  el.tempo.min = lo; el.tempo.max = hi;
+  el.scaleMin.textContent = lo; el.scaleMax.textContent = hi;
+  el.scaleMid.textContent = Math.round((lo+hi)/2/5)*5;
+}
+
+/* ============ Aufbau ============ */
+function neuerText(text){
+  stop(true);
+  textLang = textLangWahl === 'auto' ? erkenneSprache(text) : textLangWahl;
+  el.detected.textContent = textLangWahl === 'auto' && text.trim() ? T().detected(textLang) : '';
+  tokens = tokenize(text, textLang);
+  idx = 0;
+  P.prepared = false;
+  waehleStimme();
+  fuellePiperStimmen();
+  zeichneText();
+  plane();
+  aktualisiereMeta();
+  markiere();
+  knopfText();
+}
+
+function zeichneText(){
+  el.text.innerHTML = '';
+  spans = [];
+  if(!tokens.length){
+    const p = document.createElement('p');
+    p.className = 'empty'; p.textContent = T().empty;
+    el.text.appendChild(p);
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  tokens.forEach((tk,i) => {
+    const s = document.createElement('span');
+    s.className = 'w'; s.textContent = tk.roh; s.dataset.i = i;
+    frag.appendChild(s);
+    frag.appendChild(document.createTextNode(' '));
+    spans.push(s);
+    if(tk.absatzEnde){
+      const br = document.createElement('div'); br.className = 'para';
+      frag.appendChild(br);
+    }
+  });
+  el.text.appendChild(frag);
+}
+
+function plane(){
+  cum = [0];
+  let t = 0;
+  const einheitMs = 60000 / tempo;
+  tokens.forEach(tk => {
+    t += (einheit === 'syl' ? tk.syl : 1) * einheitMs;
+    if(el.optPunct.checked) t += tk.pause * einheitMs;
+    if(el.optSpeak.checked && tk.zeichen) t += (einheit === 'syl' ? silben(tk.zeichen, textLang) : 1) * einheitMs;
+    cum.push(t);
+  });
+}
+
+const gesamt = () => cum[cum.length-1] || 0;
+
+function aktualisiereMeta(){
+  el.mWords.textContent = tokens.length;
+  el.mSyl.textContent = tokens.reduce((a,t)=>a+t.syl,0);
+  el.mDur.textContent = mmss(gesamt());
+  el.prev.disabled = el.next.disabled = el.reset.disabled = el.play.disabled = !tokens.length;
+}
+
+function mmss(ms){
+  const s = Math.max(0, Math.round(ms/1000));
+  return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+}
+
+/* ============ Anzeige ============ */
+function markiere(){
+  spans.forEach((s,i) => { s.className = 'w' + (i < idx ? ' done' : i === idx ? ' now' : ''); });
+  const akt = spans[idx];
+  if(akt && el.optFollow.checked){
+    const p = el.paper, r = akt.offsetTop;
+    if(r < p.scrollTop + 20 || r > p.scrollTop + p.clientHeight - 90){
+      p.scrollTo({top: Math.max(0, r - p.clientHeight/2), behavior: laeuft ? 'smooth' : 'auto'});
+    }
+  }
+  zeichneUhr(cum[Math.min(idx, cum.length-1)]);
+}
+
+function zeichneUhr(ms){
+  const g = gesamt();
+  el.clock.textContent = mmss(ms) + ' / ' + mmss(g);
+  el.progress.style.width = (g ? Math.min(100, ms/g*100) : 0) + '%';
+}
+
+function tick(){
+  if(!laeuft) return;
+  zeichneUhr(Math.min(performance.now() - uhrStart, gesamt()));
+  rafId = requestAnimationFrame(tick);
+}
+
+function status(txt, art){
+  el.status.textContent = txt;
+  el.dot.className = 'dot' + (art ? ' ' + art : '');
+}
+
+/* ============ Piper im Browser ============ */
+const PIPER_VOICES = {
+  de:[
+    ['de_DE-thorsten-medium','Thorsten · männlich · medium · 60 MB'],
+    ['de_DE-kerstin-low','Kerstin · weiblich · low · 60 MB'],
+    ['de_DE-eva_k-x_low','Eva K. · weiblich · x-low · 20 MB'],
+    ['de_DE-ramona-low','Ramona · weiblich · low · 60 MB'],
+    ['de_DE-karlsson-low','Karlsson · männlich · low · 60 MB'],
+    ['de_DE-pavoque-low','Pavoque · männlich · low · 60 MB'],
+    ['de_DE-thorsten-high','Thorsten · männlich · high · 109 MB']
+  ],
+  en:[
+    ['en_GB-alba-medium','Alba · female · British · 60 MB'],
+    ['en_GB-cori-medium','Cori · female · British · 61 MB'],
+    ['en_GB-alan-medium','Alan · male · British · 60 MB'],
+    ['en_GB-northern_english_male-medium','Northern English · male · 60 MB'],
+    ['en_US-hfc_female-medium','HFC · female · American · 60 MB'],
+    ['en_US-lessac-medium','Lessac · female · American · 60 MB'],
+    ['en_US-ryan-medium','Ryan · male · American · 60 MB']
+  ]
+};
+const PIPER_URLS = [
+  'https://cdn.jsdelivr.net/npm/@mintplex-labs/piper-tts-web@1.0.5/dist/piper-tts-web.js',
+  'https://esm.sh/@mintplex-labs/piper-tts-web@1.0.5'
+];
+const P = { mod:null, session:null, voiceId:null, ready:false, prepared:false,
+            busy:false, ctx:null, buffers:new Map(), quelle:null };
+
+/* Safari kennt createWritable() nicht: Modellspeicher über IndexedDB nachbilden,
+   damit die Stimme nicht bei jedem Besuch neu geladen werden muss. */
+let opfsErsatz = false;
+function opfsErsatzEinbauen(){
+  try{
+    if(!navigator.storage || typeof FileSystemFileHandle === 'undefined') return false;
+    if(FileSystemFileHandle.prototype && FileSystemFileHandle.prototype.createWritable) return false;
+    const DB = 'stenodiktat-piper', LADEN = 'dateien';
+    const db = () => new Promise((ok,fehler) => {
+      const r = indexedDB.open(DB, 1);
+      r.onupgradeneeded = () => r.result.createObjectStore(LADEN);
+      r.onsuccess = () => ok(r.result);
+      r.onerror = () => fehler(r.error);
+    });
+    const tx = async (modus, fn) => {
+      const d = await db();
+      return new Promise((ok, fehler) => {
+        const t = d.transaction(LADEN, modus), anfrage = fn(t.objectStore(LADEN));
+        t.oncomplete = () => ok(anfrage ? anfrage.result : undefined);
+        t.onerror = () => fehler(t.error);
+      });
+    };
+    const datei = name => ({
+      kind:'file', name,
+      async getFile(){
+        const b = await tx('readonly', st => st.get(name));
+        if(!b) throw new DOMException('not found','NotFoundError');
+        return new File([b], name);
+      },
+      async createWritable(){
+        const teile = [];
+        return {
+          write(d){ teile.push(d && d.data !== undefined ? d.data : d); },
+          async close(){ await tx('readwrite', st => st.put(new Blob(teile), name)); }
+        };
+      },
+      async remove(){ await tx('readwrite', st => st.delete(name)); }
+    });
+    const ordner = {
+      kind:'directory', name:'piper',
+      async getFileHandle(name, opt){
+        if(!(opt && opt.create)){
+          const b = await tx('readonly', st => st.get(name));
+          if(!b) throw new DOMException('not found','NotFoundError');
+        }
+        return datei(name);
+      },
+      async *keys(){ const alle = await tx('readonly', st => st.getAllKeys()); for(const k of alle || []) yield k; },
+      async removeEntry(name){ await tx('readwrite', st => st.delete(name)); },
+      async remove(){ await tx('readwrite', st => st.clear()); }
+    };
+    const wurzel = { kind:'directory', name:'', async getDirectoryHandle(){ return ordner; } };
+    Object.defineProperty(navigator.storage, 'getDirectory', { value: async () => wurzel, configurable:true });
+    return true;
+  }catch(e){ return false; }
+}
+
+const kurzName = url => { try{ return new URL(url).hostname.replace(/^www\./,''); }catch(e){ return url; } };
+
+async function piperTest(){
+  piperStatus(T().checking, 0);
+  const zeilen = [];
+  let mod = P.mod;
+  if(mod) zeilen.push('✓ ' + kurzName(PIPER_URLS[0]));
+  else for(const url of PIPER_URLS){
+    try{ mod = await import(url); P.mod = mod; zeilen.push('✓ ' + kurzName(url)); break; }
+    catch(e){ zeilen.push('✗ ' + kurzName(url)); }
+  }
+  if(mod){
+    try{
+      const pfad = mod.PATH_MAP[el.piperVoice.value];
+      const r = await fetch(mod.HF_BASE + '/' + pfad + '.json');
+      zeilen.push((r.ok ? '✓ ' : '✗ ') + 'huggingface.co');
+    }catch(e){ zeilen.push('✗ huggingface.co (' + (e && e.message) + ')'); }
+    try{
+      const r2 = await fetch('https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.18.0/package.json');
+      zeilen.push((r2.ok ? '✓ ' : '✗ ') + 'cdnjs.cloudflare.com');
+    }catch(e){ zeilen.push('✗ cdnjs.cloudflare.com'); }
+  }
+  if(opfsErsatz === 'aus') zeilen.push('⚠ ' + T().noCache);
+  piperStatus(zeilen.join('   '), 0);
+}
+
+async function piperModul(){
+  if(P.mod) return P.mod;
+  let fehler;
+  for(const url of PIPER_URLS){
+    try{ P.mod = await import(url); return P.mod; }catch(e){ fehler = e; }
+  }
+  throw fehler || new Error('module unavailable');
+}
+
+function audioCtx(){
+  if(!P.ctx) P.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if(P.ctx.state === 'suspended') P.ctx.resume();
+  return P.ctx;
+}
+
+function piperStatus(text, anteil){
+  $('piperStatus').textContent = text;
+  $('piperBar').style.width = Math.round((anteil||0)*100) + '%';
+}
+
+function piperText(tk){
+  return (el.optSpeak.checked && tk.zeichen) ? tk.sprech + ', ' + tk.zeichen : tk.sprech;
+}
+
+async function piperLaden(){
+  const voiceId = el.piperVoice.value;
+  if(!voiceId) return false;
+  if(P.ready && P.voiceId === voiceId) return true;
+  try{
+    const mod = await piperModul();
+    piperStatus(T().piperDownload(0), 0);
+    if(mod.TtsSession && mod.TtsSession._instance) mod.TtsSession._instance = null;   // Stimmenwechsel erzwingen
+    P.session = await mod.TtsSession.create({
+      voiceId,
+      progress: p => {
+        if(!p || !p.total) return;
+        const proz = Math.round(p.loaded*100/p.total);
+        piperStatus(T().piperDownload(proz), p.loaded/p.total);
+        status(T().piperDownload(proz), 'hold');
+      }
+    });
+    P.voiceId = voiceId; P.ready = true; P.prepared = false;
+    P.buffers.clear();
+    piperStatus(T().piperReady, 1);
+    return true;
+  }catch(e){
+    console.error(e);
+    P.ready = false;
+    piperStatus(T().piperFail + ' (' + ((e && e.message) || e) + ')', 0);
+    return false;
+  }
+}
+
+async function piperVorbereiten(){
+  if(!P.ready || !tokens.length) return false;
+  const ctx = audioCtx();
+  const liste = I18N[textLang].countdown.concat(tokens.map(piperText)).filter(t => t && t.trim());
+  P.busy = true;
+  let i = 0;
+  for(const text of liste){
+    if(!P.busy) return false;
+    if(!P.buffers.has(text)){
+      try{
+        const wav = await P.session.predict(text);
+        P.buffers.set(text, await ctx.decodeAudioData(await wav.arrayBuffer()));
+      }catch(e){ P.buffers.set(text, null); }
+    }
+    i++;
+    piperStatus(T().piperPrep(i, liste.length), i/liste.length);
+    status(T().piperPrep(i, liste.length), 'hold');
+    await new Promise(r => setTimeout(r, 0));
+  }
+  P.busy = false; P.prepared = true;
+  piperStatus(T().piperDone, 1);
+  return true;
+}
+
+function piperStop(){
+  if(P.quelle){ try{ P.quelle.stop(); }catch(e){} P.quelle = null; }
+}
+
+function piperSpiele(text, platzSek){
+  const buf = P.buffers.get(text);
+  if(!buf) return false;
+  const ctx = audioCtx();
+  piperStop();
+  const q = ctx.createBufferSource();
+  q.buffer = buf;
+  q.playbackRate.value = buf.duration > platzSek ? Math.min(2.6, buf.duration/platzSek) : 1;
+  q.connect(ctx.destination);
+  q.start();
+  P.quelle = q;
+  return true;
+}
+
+function fuellePiperStimmen(){
+  const liste = PIPER_VOICES[textLang] || PIPER_VOICES.de;
+  const vorher = el.piperVoice.value;
+  el.piperVoice.innerHTML = '';
+  liste.forEach(([id,label]) => {
+    const o = document.createElement('option');
+    o.value = id; o.textContent = label;
+    el.piperVoice.appendChild(o);
+  });
+  const gemerkt = (()=>{ try{ return localStorage.getItem('steno.piper.'+textLang); }catch(e){ return null; } })();
+  const ziel = liste.some(v => v[0] === vorher) ? vorher : (gemerkt && liste.some(v=>v[0]===gemerkt) ? gemerkt : liste[0][0]);
+  el.piperVoice.value = ziel;
+  if(P.voiceId !== ziel){ P.ready = false; P.prepared = false; piperStatus(T().piperIdle, 0); }
+}
+
+/* ============ Sprechen ============ */
+function sprich(tk){
+  const platzSek = ((einheit === 'syl' ? tk.syl : 1) * 60 / tempo) * 0.92;
+  if(engine === 'piper' && P.ready && piperSpiele(piperText(tk), platzSek)) return;
+  if(!synth) return;
+  utterSeq++;
+  const meine = utterSeq;
+  synth.cancel();
+  let text = tk.sprech;
+  if(el.optSpeak.checked && tk.zeichen) text += ', ' + tk.zeichen;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = textLang === 'en' ? 'en-GB' : 'de-DE';
+  if(stimme) u.voice = stimme;
+  const silbenGes = silbenSatz(text, textLang);
+  const rate = (silbenGes / sps) / Math.max(0.12, platzSek * 0.96);
+  u.rate = Math.min(4, Math.max(0.55, rate));
+  u.volume = 1; u.pitch = 1;
+  const t0 = performance.now();
+  u.onend = () => {
+    if(meine !== utterSeq) return;
+    const dauer = (performance.now() - t0)/1000;
+    if(silbenGes >= 2 && dauer > 0.2){
+      const est = (silbenGes / dauer) / u.rate;
+      if(est > 2 && est < 12) sps = sps*0.85 + est*0.15;
+    }
+  };
+  try{ synth.speak(u); }catch(e){}
+}
+
+function ansage(text){
+  if(engine === 'piper' && P.ready && piperSpiele(text, 0.9)) return;
+  if(!synth) return;
+  utterSeq++;
+  synth.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = textLang === 'en' ? 'en-GB' : 'de-DE';
+  if(stimme) u.voice = stimme;
+  u.rate = 1;
+  try{ synth.speak(u); }catch(e){}
+}
+
+/* ============ Ablauf ============ */
+function schritt(){
+  if(!laeuft) return;
+  if(idx >= tokens.length){ fertig(); return; }
+  markiere();
+  sprich(tokens[idx]);
+  const ziel = uhrStart + cum[idx+1];
+  const warte = () => {
+    const rest = ziel - performance.now();
+    if(rest > 20){ timer = setTimeout(warte, Math.min(rest, 250)); return; }
+    timer = setTimeout(() => { idx++; schritt(); }, Math.max(0, rest));
+  };
+  warte();
+}
+
+async function start(){
+  if(!tokens.length) return;
+  if(idx >= tokens.length) idx = 0;
+  if(engine === 'piper'){
+    if(!P.ready){ el.play.disabled = true; const ok = await piperLaden(); el.play.disabled = false; if(!ok){ status(T().piperFail, ''); } }
+    if(P.ready && !P.prepared){
+      el.play.disabled = true;
+      const ok = await piperVorbereiten();
+      el.play.disabled = false;
+      if(!ok){ status(T().ready, ''); return; }
+    }
+  }
+  if(el.optCount.checked && idx === 0 && !pausiert) vorzaehler(losgehen);
+  else losgehen();
+}
+
+function losgehen(){
+  laeuft = true; pausiert = false;
+  uhrStart = performance.now() - cum[idx];
+  knopfText();
+  status(T().running, 'live');
+  cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(tick);
+  schritt();
+}
+
+function vorzaehler(danach){
+  const worte = I18N[textLang].countdown;
+  zaehltVor = true;
+  knopfText();
+  let i = 0;
+  status(T().attention + ' … ' + worte[0], 'hold');
+  ansage(worte[0]);
+  timer = setInterval(() => {
+    i++;
+    if(!zaehltVor){ clearInterval(timer); timer = null; return; }
+    if(i < worte.length){ status(T().attention + ' … ' + worte[i], 'hold'); ansage(worte[i]); }
+    else { clearInterval(timer); timer = null; zaehltVor = false; danach(); }
+  }, 1000);
+}
+
+function pause(){
+  laeuft = false; pausiert = true;
+  if(timer){ clearTimeout(timer); clearInterval(timer); timer = null; }
+  cancelAnimationFrame(rafId);
+  if(synth){ utterSeq++; synth.cancel(); }
+  piperStop();
+  knopfText();
+  status(T().paused, 'hold');
+  zeichneUhr(cum[Math.min(idx, cum.length-1)]);
+}
+
+function stop(still){
+  zaehltVor = false; laeuft = false; pausiert = false;
+  if(timer){ clearTimeout(timer); clearInterval(timer); timer = null; }
+  cancelAnimationFrame(rafId);
+  if(synth){ utterSeq++; synth.cancel(); }
+  piperStop();
+  P.busy = false;
+  knopfText();
+  if(!still) status(T().ready, '');
+}
+
+function fertig(){
+  stop(true);
+  idx = tokens.length;
+  spans.forEach(s => s.className = 'w done');
+  status(T().done, '');
+  zeichneUhr(gesamt());
+  knopfText();
+}
+
+function springe(neu){
+  idx = Math.min(Math.max(0, neu), Math.max(0, tokens.length-1));
+  if(laeuft){
+    if(timer){ clearTimeout(timer); timer = null; }
+    uhrStart = performance.now() - cum[idx];
+    schritt();
+  } else {
+    markiere();
+    if(tokens[idx]) sprich(tokens[idx]);
+    knopfText();
+  }
+}
+
+/* ============ Bedienung ============ */
+el.play.addEventListener('click', () => {
+  if(engine === 'piper') audioCtx();          // Tonausgabe im Nutzerklick freischalten (iOS)
+  if(zaehltVor){ zaehltVor = false; stop(); return; }
+  laeuft ? pause() : start();
+});
+el.prev.addEventListener('click', () => springe(idx-1));
+el.next.addEventListener('click', () => springe(idx+1));
+el.reset.addEventListener('click', () => { stop(); idx = 0; markiere(); knopfText(); });
+el.text.addEventListener('click', e => {
+  const s = e.target.closest('.w');
+  if(s) springe(+s.dataset.i);
+});
+
+function setTempo(v){
+  const [lo,hi] = GRENZEN[einheit];
+  tempo = Math.min(hi, Math.max(lo, Math.round(v/5)*5));
+  el.tempo.value = tempo;
+  el.tempoOut.textContent = tempo;
+  [...el.presets.children].forEach(c => c.setAttribute('aria-pressed', +c.dataset.tempo === tempo));
+  plane(); aktualisiereMeta();
+  if(laeuft) uhrStart = performance.now() - cum[idx];
+  zeichneUhr(cum[Math.min(idx, cum.length-1)]);
+}
+el.tempo.addEventListener('input', e => setTempo(+e.target.value));
+el.presets.addEventListener('click', e => { if(e.target.dataset.tempo) setTempo(+e.target.dataset.tempo); });
+
+el.unitpick.addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if(!b || b.dataset.unit === einheit) return;
+  const alt = einheit;
+  einheit = b.dataset.unit;
+  tempo = alt === 'syl' ? Math.round(tempo/1.5/5)*5 : Math.round(tempo*1.5/5)*5;   // ~1,5 Silben je Wort
+  zeichnePresets();
+  [...el.unitpick.children].forEach(x => x.setAttribute('aria-pressed', x.dataset.unit === einheit));
+  setTempo(tempo);
+});
+
+let tippTimer = null;
+el.input.addEventListener('input', () => {
+  clearTimeout(tippTimer);
+  tippTimer = setTimeout(() => neuerText(el.input.value), 250);
+});
+el.clear.addEventListener('click', () => { el.input.value = ''; neuerText(''); el.input.focus(); });
+el.sample.addEventListener('click', () => {
+  const s = SAMPLE[textLangWahl === 'auto' ? uiLang : textLangWahl];
+  el.input.value = s; neuerText(s);
+});
+
+el.langsw.addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if(!b || b.dataset.lang === uiLang) return;
+  uiLang = b.dataset.lang;
+  try{ localStorage.setItem('steno.ui', uiLang); }catch(e){}
+  wendeSpracheAn();
+});
+
+el.textlang.addEventListener('change', () => {
+  textLangWahl = el.textlang.value;
+  try{ localStorage.setItem('steno.text', textLangWahl); }catch(e){}
+  neuerText(el.input.value);
+});
+
+el.engine.addEventListener('change', () => {
+  engine = el.engine.value;
+  try{ localStorage.setItem('steno.engine', engine); }catch(e){}
+  zeigeStimmenfelder();
+  if(engine === 'piper') fuellePiperStimmen();
+});
+
+el.piperVoice.addEventListener('change', () => {
+  try{ localStorage.setItem('steno.piper.'+textLang, el.piperVoice.value); }catch(e){}
+  if(P.voiceId !== el.piperVoice.value){
+    P.ready = false; P.prepared = false; P.buffers.clear();
+    piperStatus(T().piperIdle, 0);
+  }
+});
+
+el.piperCheck.addEventListener('click', async () => {
+  el.piperCheck.disabled = true;
+  await piperTest();
+  el.piperCheck.disabled = false;
+});
+
+el.piperLoad.addEventListener('click', async () => {
+  el.piperLoad.disabled = true;
+  await piperLaden();
+  el.piperLoad.disabled = false;
+});
+
+function zeigeStimmenfelder(){
+  el.piperBox.classList.toggle('hide', engine !== 'piper');
+  el.voiceBox.classList.toggle('hide', engine === 'piper');
+}
+
+[el.optPunct, el.optSpeak].forEach(o => o.addEventListener('change', () => {
+  P.prepared = false;
+  plane(); aktualisiereMeta();
+  if(laeuft) uhrStart = performance.now() - cum[idx];
+  zeichneUhr(cum[Math.min(idx, cum.length-1)]);
+}));
+
+document.addEventListener('keydown', e => {
+  const t = e.target.tagName;
+  if(t === 'TEXTAREA' || t === 'INPUT' || t === 'SELECT') return;
+  if(e.code === 'Space'){ e.preventDefault(); if(zaehltVor){ zaehltVor = false; stop(); } else laeuft ? pause() : start(); }
+  else if(e.key === 'ArrowRight'){ e.preventDefault(); springe(idx+1); }
+  else if(e.key === 'ArrowLeft'){ e.preventDefault(); springe(idx-1); }
+});
+
+/* ============ Stimmen ============ */
+function ladeStimmen(){
+  if(!synth){ el.noTTS.classList.remove('hide'); el.voice.innerHTML = '<option>—</option>'; return; }
+  const alle = synth.getVoices();
+  if(!alle.length){ el.voice.innerHTML = '<option>'+T().loading+'</option>'; return; }
+  const praefix = textLang === 'en' ? /^en/i : /^de/i;
+  stimmen = alle.filter(v => praefix.test(v.lang));
+  if(!stimmen.length) stimmen = alle;
+  el.voice.innerHTML = '';
+  stimmen.forEach((v,i) => {
+    const o = document.createElement('option');
+    o.value = i;
+    o.textContent = v.name + (praefix.test(v.lang) ? '' : ' · ' + v.lang);
+    el.voice.appendChild(o);
+  });
+  const gemerkt = stimmen.findIndex(v => stimme && v.name === stimme.name && praefix.test(v.lang));
+  el.voice.value = gemerkt >= 0 ? gemerkt : 0;
+  stimme = stimmen[el.voice.value] || null;
+}
+function waehleStimme(){
+  if(!synth) return;
+  const praefix = textLang === 'en' ? /^en/i : /^de/i;
+  if(!stimme || !praefix.test(stimme.lang)) stimme = null;
+  ladeStimmen();
+}
+el.voice.addEventListener('change', () => { stimme = stimmen[el.voice.value] || null; });
+if(synth){
+  synth.onvoiceschanged = () => ladeStimmen();
+  setTimeout(ladeStimmen, 300);
+  setTimeout(ladeStimmen, 1200);
+} else {
+  el.noTTS.classList.remove('hide');
+}
+
+/* ============ Start ============ */
+try{
+  const u = localStorage.getItem('steno.ui'); if(u) uiLang = u;
+  const s = localStorage.getItem('steno.text'); if(s) textLangWahl = s;
+  const g = localStorage.getItem('steno.engine'); if(g) engine = g;
+}catch(e){}
+el.engine.value = engine;
+if(typeof FileSystemFileHandle !== 'undefined' && FileSystemFileHandle.prototype
+   && !FileSystemFileHandle.prototype.createWritable){
+  opfsErsatz = opfsErsatzEinbauen() ? 'an' : 'aus';
+}
+el.textlang.value = textLangWahl;
+zeigeStimmenfelder();
+fuellePiperStimmen();
+wendeSpracheAn();
+zeichnePresets();
+setTempo(tempo);
+neuerText('');
+})();
+</script>
+</body>
+</html>
