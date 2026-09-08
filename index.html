@@ -705,7 +705,7 @@ const PIPER_URLS = [
   'https://esm.sh/@mintplex-labs/piper-tts-web@1.0.5'
 ];
 const P = { mod:null, session:null, voiceId:null, ready:false, prepared:false,
-            busy:false, ctx:null, buffers:new Map(), quelle:null };
+            busy:false, ctx:null, buffers:new Map(), gerafft:new Map(), quelle:null };
 
 /* Safari kennt createWritable() nicht: Modellspeicher über IndexedDB nachbilden,
    damit die Stimme nicht bei jedem Besuch neu geladen werden muss. */
@@ -832,7 +832,7 @@ async function piperLaden(){
       }
     });
     P.voiceId = voiceId; P.ready = true; P.prepared = false;
-    P.buffers.clear();
+    P.buffers.clear(); P.gerafft.clear();
     piperStatus(T().piperReady, 1);
     return true;
   }catch(e){
@@ -871,14 +871,114 @@ function piperStop(){
   if(P.quelle){ try{ P.quelle.stop(); }catch(e){} P.quelle = null; }
 }
 
+/* ---- Zeitraffer (WSOLA) ----
+   Ein Wort muss oft schneller laufen, als Piper es gesprochen hat. playbackRate
+   würde das Signal dafür resampeln und damit die Stimme mit nach oben ziehen.
+   WSOLA lässt die Wellenform unverändert und kürzt nur die Zeit: es schneidet
+   überlappende Blöcke aus dem Original und setzt jeden dort an, wo er
+   phasenrichtig an den zuletzt ausgegebenen anschließt. Die Tonhöhe bleibt. */
+
+function hannFenster(n){
+  const w = new Float32Array(n);
+  for(let i=0;i<n;i++) w[i] = 0.5 - 0.5*Math.cos(2*Math.PI*i/n);
+  return w;
+}
+
+/* Stelle im Original, an der der nächste Block am besten anschließt. */
+function besteStelle(x, ref, ideal, such, L, letzte){
+  const lo = Math.max(0, ideal - such);
+  const hi = Math.min(letzte, ideal + such);
+  if(hi <= lo) return Math.max(0, Math.min(letzte, ideal));
+  let best = lo, bestWert = -Infinity;
+  const suche = (von, bis, schritt) => {
+    for(let p = von; p <= bis; p += schritt){
+      let punkt = 0, energie = 1e-9;
+      for(let i=0;i<L;i++){ const s = x[p+i]; punkt += s*ref[i]; energie += s*s; }
+      const wert = punkt / Math.sqrt(energie);   // normiert, sonst gewinnen nur laute Stellen
+      if(wert > bestWert){ bestWert = wert; best = p; }
+    }
+  };
+  suche(lo, hi, 4);                                       // grob über den ganzen Bereich
+  suche(Math.max(lo, best-3), Math.min(hi, best+3), 1);   // fein um den Treffer
+  return best;
+}
+
+function wsolaPositionen(x, N, Hs, Ha, such){
+  const letzte = x.length - N;
+  const ref = new Float32Array(Hs);
+  const pos = [];
+  let vorher = 0;
+  for(let k = 0; k*Ha <= letzte; k++){
+    let p = 0;
+    if(k > 0){
+      const start = Math.min(vorher + Hs, letzte);        // natürliche Fortsetzung des letzten Blocks
+      for(let i=0;i<Hs;i++) ref[i] = x[start+i];
+      p = besteStelle(x, ref, k*Ha, such, Hs, letzte);
+    }
+    pos.push(p);
+    vorher = p;
+  }
+  return pos;
+}
+
+function wsolaKanal(x, pos, N, Hs, fenster, laenge){
+  const out = new Float32Array(laenge);
+  const summe = new Float32Array(laenge);
+  for(let k=0;k<pos.length;k++){
+    const p = pos[k], o = k*Hs;
+    for(let i=0;i<N;i++){
+      const w = fenster[i];
+      out[o+i] += x[p+i]*w;
+      summe[o+i] += w;
+    }
+  }
+  /* Hann summiert sich bei halber Überlappung zu 1 – außer an den Rändern.
+     Dort bleibt die Fensterung stehen, das vermeidet Knackser. */
+  for(let i=0;i<laenge;i++) if(summe[i] > 0.1) out[i] /= summe[i];
+  return out;
+}
+
+function zeitraffer(buf, faktor){
+  const sr = buf.sampleRate;
+  const N  = Math.round(sr*0.040) & ~1;        // 40-ms-Fenster, gerade Länge
+  const Hs = N >> 1;                            // Ausgabesprung
+  const Ha = Math.round(Hs*faktor);             // Eingabesprung
+  const such = Math.round(sr*0.010);            // +/- 10 ms Suchbereich
+  if(N < 128 || buf.length < N + Ha + such) return buf;   // zu kurz zum Umschneiden
+  const pos = wsolaPositionen(buf.getChannelData(0), N, Hs, Ha, such);
+  if(pos.length < 2) return buf;
+  const laenge = (pos.length-1)*Hs + N;
+  const fenster = hannFenster(N);
+  const out = audioCtx().createBuffer(buf.numberOfChannels, laenge, sr);
+  /* Alle Kanäle an denselben Stellen schneiden, sonst laufen sie auseinander. */
+  for(let c=0;c<buf.numberOfChannels;c++)
+    out.getChannelData(c).set(wsolaKanal(buf.getChannelData(c), pos, N, Hs, fenster, laenge));
+  return out;
+}
+
+/* Gerafftes Audio merken: die Faktoren wiederholen sich im Diktat, und das
+   Umschneiden soll den Ablauf nicht mitten im Wort aufhalten. */
+function geraffterKlang(text, buf, platzSek){
+  if(!(platzSek > 0) || buf.duration <= platzSek) return buf;
+  const faktor = Math.min(2.6, Math.ceil(buf.duration/platzSek*40)/40);
+  if(faktor <= 1.01) return buf;
+  const schluessel = text + '\u0000' + faktor;
+  let fertig = P.gerafft.get(schluessel);
+  if(!fertig){
+    if(P.gerafft.size > 400) P.gerafft.clear();
+    fertig = zeitraffer(buf, faktor);
+    P.gerafft.set(schluessel, fertig);
+  }
+  return fertig;
+}
+
 function piperSpiele(text, platzSek){
   const buf = P.buffers.get(text);
   if(!buf) return false;
   const ctx = audioCtx();
   piperStop();
   const q = ctx.createBufferSource();
-  q.buffer = buf;
-  q.playbackRate.value = buf.duration > platzSek ? Math.min(2.6, buf.duration/platzSek) : 1;
+  q.buffer = geraffterKlang(text, buf, platzSek);
   q.connect(ctx.destination);
   q.start();
   P.quelle = q;
@@ -1114,7 +1214,7 @@ el.engine.addEventListener('change', () => {
 el.piperVoice.addEventListener('change', () => {
   try{ localStorage.setItem('steno.piper.'+textLang, el.piperVoice.value); }catch(e){}
   if(P.voiceId !== el.piperVoice.value){
-    P.ready = false; P.prepared = false; P.buffers.clear();
+    P.ready = false; P.prepared = false; P.buffers.clear(); P.gerafft.clear();
     piperStatus(T().piperIdle, 0);
   }
 });
