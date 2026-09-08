@@ -79,6 +79,7 @@
   .bar i{position:absolute;inset:0 auto 0 0;width:0;background:var(--pencil);display:block}
 
   .transport{display:flex;gap:10px;align-items:stretch;padding:16px 18px;flex-wrap:wrap}
+  .transport .tgroup{display:flex;gap:10px;flex-wrap:wrap}
   button{font:inherit;color:inherit;cursor:pointer}
   .btn{
     background:transparent;border:1px solid var(--rule);border-radius:3px;padding:11px 16px;
@@ -187,7 +188,10 @@
       <button class="btn" id="prevBtn">◀ <span data-i18n="word"></span> <span class="k">←</span></button>
       <button class="btn" id="nextBtn"><span data-i18n="word"></span> ▶ <span class="k">→</span></button>
       <span class="spacer"></span>
-      <button class="btn" id="resetBtn" data-i18n="reset"></button>
+      <span class="tgroup">
+        <button class="btn" id="saveBtn" data-i18n="save"></button>
+        <button class="btn" id="resetBtn" data-i18n="reset"></button>
+      </span>
     </div>
   </div>
 
@@ -279,6 +283,11 @@ const I18N = {
     ready:"Bereit", running:"Diktat läuft", paused:"Pausiert", done:"Diktat beendet", attention:"Achtung",
     start:"Diktat starten", pause:"Pause", resume:"Weiter", again:"Noch einmal", abort:"Abbrechen",
     word:"Wort", reset:"Zurück an den Anfang",
+    save:"Als Audio speichern",
+    saveWorking:"Audiodatei wird erzeugt …", saveDone:"Audiodatei gespeichert",
+    saveFail:"Die Audiodatei ließ sich nicht erzeugen.",
+    saveNeedsPiper:"Zum Speichern die Stimmenquelle „Piper“ wählen – Systemstimmen lassen sich nicht aufzeichnen.",
+    saveTooLong:"Das Diktat ist länger als 30 Minuten – das ist zu lang für eine Audiodatei.",
     unitSyl:"Silben pro Minute", unitWord:"Wörter pro Minute",
     hText:"Diktattext", placeholder:"Text hier einfügen …",
     words:"Wörter", syllables:"Silben", duration:"Dauer",
@@ -316,6 +325,11 @@ const I18N = {
     ready:"Ready", running:"Dictating", paused:"Paused", done:"Dictation finished", attention:"Get ready",
     start:"Start dictation", pause:"Pause", resume:"Resume", again:"Run again", abort:"Cancel",
     word:"word", reset:"Back to the start",
+    save:"Save as audio",
+    saveWorking:"Building the audio file …", saveDone:"Audio file saved",
+    saveFail:"The audio file could not be created.",
+    saveNeedsPiper:"Pick the “Piper” voice source to save audio – system voices cannot be recorded.",
+    saveTooLong:"This dictation runs over 30 minutes, which is too long for an audio file.",
     unitSyl:"syllables per minute", unitWord:"words per minute",
     hText:"Dictation text", placeholder:"Paste your text here …",
     words:"words", syllables:"syllables", duration:"Duration",
@@ -508,7 +522,7 @@ const el = {
   tempo:$('tempo'), tempoOut:$('tempoOut'), presets:$('presets'), unitpick:$('unitpick'),
   scaleMin:$('scaleMin'), scaleMid:$('scaleMid'), scaleMax:$('scaleMax'),
   input:$('input'), mWords:$('mWords'), mSyl:$('mSyl'), mDur:$('mDur'),
-  sample:$('sampleBtn'), clear:$('clearBtn'), langsw:$('langsw'),
+  sample:$('sampleBtn'), clear:$('clearBtn'), langsw:$('langsw'), save:$('saveBtn'),
   optCount:$('optCount'), optPunct:$('optPunct'), optSpeak:$('optSpeak'), optFollow:$('optFollow'),
   textlang:$('textlang'), detected:$('detected'), voice:$('voice'), noTTS:$('noTTS'), note:$('note'),
   engine:$('engine'), voiceBox:$('voiceBox'), piperBox:$('piperBox'),
@@ -553,6 +567,7 @@ function wendeSpracheAn(){
   el.textlang.options[2].textContent = t.en;
   el.note.textContent = t.note;
   el.noTTS.textContent = t.noTTS;
+  el.save.title = engine === 'piper' ? '' : t.saveNeedsPiper;
   zeichnePresets();
   if(!tokens.length) zeichneText();
   el.detected.textContent = textLangWahl === 'auto' && tokens.length ? t.detected(textLang) : '';
@@ -642,6 +657,8 @@ function aktualisiereMeta(){
   el.mSyl.textContent = tokens.reduce((a,t)=>a+t.syl,0);
   el.mDur.textContent = mmss(gesamt());
   el.prev.disabled = el.next.disabled = el.reset.disabled = el.play.disabled = !tokens.length;
+  el.save.disabled = !tokens.length || engine !== 'piper';
+  el.save.title = engine === 'piper' ? '' : T().saveNeedsPiper;
 }
 
 function mmss(ms){
@@ -705,7 +722,7 @@ const PIPER_URLS = [
   'https://esm.sh/@mintplex-labs/piper-tts-web@1.0.5'
 ];
 const P = { mod:null, session:null, voiceId:null, ready:false, prepared:false,
-            busy:false, ctx:null, buffers:new Map(), quelle:null };
+            busy:false, ctx:null, buffers:new Map(), gerafft:new Map(), quelle:null };
 
 /* Safari kennt createWritable() nicht: Modellspeicher über IndexedDB nachbilden,
    damit die Stimme nicht bei jedem Besuch neu geladen werden muss. */
@@ -832,7 +849,7 @@ async function piperLaden(){
       }
     });
     P.voiceId = voiceId; P.ready = true; P.prepared = false;
-    P.buffers.clear();
+    P.buffers.clear(); P.gerafft.clear();
     piperStatus(T().piperReady, 1);
     return true;
   }catch(e){
@@ -871,14 +888,114 @@ function piperStop(){
   if(P.quelle){ try{ P.quelle.stop(); }catch(e){} P.quelle = null; }
 }
 
+/* ---- Zeitraffer (WSOLA) ----
+   Ein Wort muss oft schneller laufen, als Piper es gesprochen hat. playbackRate
+   würde das Signal dafür resampeln und damit die Stimme mit nach oben ziehen.
+   WSOLA lässt die Wellenform unverändert und kürzt nur die Zeit: es schneidet
+   überlappende Blöcke aus dem Original und setzt jeden dort an, wo er
+   phasenrichtig an den zuletzt ausgegebenen anschließt. Die Tonhöhe bleibt. */
+
+function hannFenster(n){
+  const w = new Float32Array(n);
+  for(let i=0;i<n;i++) w[i] = 0.5 - 0.5*Math.cos(2*Math.PI*i/n);
+  return w;
+}
+
+/* Stelle im Original, an der der nächste Block am besten anschließt. */
+function besteStelle(x, ref, ideal, such, L, letzte){
+  const lo = Math.max(0, ideal - such);
+  const hi = Math.min(letzte, ideal + such);
+  if(hi <= lo) return Math.max(0, Math.min(letzte, ideal));
+  let best = lo, bestWert = -Infinity;
+  const suche = (von, bis, schritt) => {
+    for(let p = von; p <= bis; p += schritt){
+      let punkt = 0, energie = 1e-9;
+      for(let i=0;i<L;i++){ const s = x[p+i]; punkt += s*ref[i]; energie += s*s; }
+      const wert = punkt / Math.sqrt(energie);   // normiert, sonst gewinnen nur laute Stellen
+      if(wert > bestWert){ bestWert = wert; best = p; }
+    }
+  };
+  suche(lo, hi, 4);                                       // grob über den ganzen Bereich
+  suche(Math.max(lo, best-3), Math.min(hi, best+3), 1);   // fein um den Treffer
+  return best;
+}
+
+function wsolaPositionen(x, N, Hs, Ha, such){
+  const letzte = x.length - N;
+  const ref = new Float32Array(Hs);
+  const pos = [];
+  let vorher = 0;
+  for(let k = 0; k*Ha <= letzte; k++){
+    let p = 0;
+    if(k > 0){
+      const start = Math.min(vorher + Hs, letzte);        // natürliche Fortsetzung des letzten Blocks
+      for(let i=0;i<Hs;i++) ref[i] = x[start+i];
+      p = besteStelle(x, ref, k*Ha, such, Hs, letzte);
+    }
+    pos.push(p);
+    vorher = p;
+  }
+  return pos;
+}
+
+function wsolaKanal(x, pos, N, Hs, fenster, laenge){
+  const out = new Float32Array(laenge);
+  const summe = new Float32Array(laenge);
+  for(let k=0;k<pos.length;k++){
+    const p = pos[k], o = k*Hs;
+    for(let i=0;i<N;i++){
+      const w = fenster[i];
+      out[o+i] += x[p+i]*w;
+      summe[o+i] += w;
+    }
+  }
+  /* Hann summiert sich bei halber Überlappung zu 1 – außer an den Rändern.
+     Dort bleibt die Fensterung stehen, das vermeidet Knackser. */
+  for(let i=0;i<laenge;i++) if(summe[i] > 0.1) out[i] /= summe[i];
+  return out;
+}
+
+function zeitraffer(buf, faktor){
+  const sr = buf.sampleRate;
+  const N  = Math.round(sr*0.040) & ~1;        // 40-ms-Fenster, gerade Länge
+  const Hs = N >> 1;                            // Ausgabesprung
+  const Ha = Math.round(Hs*faktor);             // Eingabesprung
+  const such = Math.round(sr*0.010);            // +/- 10 ms Suchbereich
+  if(N < 128 || buf.length < N + Ha + such) return buf;   // zu kurz zum Umschneiden
+  const pos = wsolaPositionen(buf.getChannelData(0), N, Hs, Ha, such);
+  if(pos.length < 2) return buf;
+  const laenge = (pos.length-1)*Hs + N;
+  const fenster = hannFenster(N);
+  const out = audioCtx().createBuffer(buf.numberOfChannels, laenge, sr);
+  /* Alle Kanäle an denselben Stellen schneiden, sonst laufen sie auseinander. */
+  for(let c=0;c<buf.numberOfChannels;c++)
+    out.getChannelData(c).set(wsolaKanal(buf.getChannelData(c), pos, N, Hs, fenster, laenge));
+  return out;
+}
+
+/* Gerafftes Audio merken: die Faktoren wiederholen sich im Diktat, und das
+   Umschneiden soll den Ablauf nicht mitten im Wort aufhalten. */
+function geraffterKlang(text, buf, platzSek){
+  if(!(platzSek > 0) || buf.duration <= platzSek) return buf;
+  const faktor = Math.min(2.6, Math.ceil(buf.duration/platzSek*40)/40);
+  if(faktor <= 1.01) return buf;
+  const schluessel = text + '\u0000' + faktor;
+  let fertig = P.gerafft.get(schluessel);
+  if(!fertig){
+    if(P.gerafft.size > 400) P.gerafft.clear();
+    fertig = zeitraffer(buf, faktor);
+    P.gerafft.set(schluessel, fertig);
+  }
+  return fertig;
+}
+
 function piperSpiele(text, platzSek){
   const buf = P.buffers.get(text);
   if(!buf) return false;
   const ctx = audioCtx();
   piperStop();
   const q = ctx.createBufferSource();
-  q.buffer = buf;
-  q.playbackRate.value = buf.duration > platzSek ? Math.min(2.6, buf.duration/platzSek) : 1;
+  q.buffer = geraffterKlang(text, buf, platzSek);
   q.connect(ctx.destination);
   q.start();
   P.quelle = q;
@@ -901,8 +1018,13 @@ function fuellePiperStimmen(){
 }
 
 /* ============ Sprechen ============ */
+/* Zeitfenster, das einem Wort im Diktat zur Verfügung steht. */
+function platzFuer(tk){
+  return ((einheit === 'syl' ? tk.syl : 1) * 60 / tempo) * 0.92;
+}
+
 function sprich(tk){
-  const platzSek = ((einheit === 'syl' ? tk.syl : 1) * 60 / tempo) * 0.92;
+  const platzSek = platzFuer(tk);
   if(engine === 'piper' && P.ready && piperSpiele(piperText(tk), platzSek)) return;
   if(!synth) return;
   utterSeq++;
@@ -939,6 +1061,124 @@ function ansage(text){
   if(stimme) u.voice = stimme;
   u.rate = 1;
   try{ synth.speak(u); }catch(e){}
+}
+
+/* ============ Als Audiodatei speichern ============
+   Das fertige Diktat wird offline in einen einzigen Puffer gerendert – mit
+   Vorzähler, Tempo, Satzzeichenpausen und Zeitraffer genau so, wie es auch
+   aus dem Lautsprecher käme – und als WAV heruntergeladen. Das geht nur mit
+   Piper: die Systemstimmen des Browsers geben ihr Audio nicht heraus. */
+
+const EXPORT_MAX_SEK = 30*60;
+
+/* Alle Klangschnipsel des Diktats mit ihrer Startzeit in Sekunden. */
+function diktatStuecke(){
+  const worte = I18N[textLang].countdown;
+  const vorlauf = el.optCount.checked ? worte.length : 0;
+  const roh = [];
+  if(vorlauf) worte.forEach((w, i) => roh.push({ text:w, start:i, platz:0.9 }));
+  tokens.forEach((tk, i) => roh.push({ text:piperText(tk), start:vorlauf + cum[i]/1000, platz:platzFuer(tk) }));
+
+  const stuecke = [];
+  let ende = vorlauf + gesamt()/1000;
+  for(const s of roh){
+    const puffer = P.buffers.get(s.text);
+    if(!puffer) continue;                       // Wort ohne Audio wird übersprungen
+    const klang = geraffterKlang(s.text, puffer, s.platz);
+    stuecke.push({ start:s.start, klang });
+    ende = Math.max(ende, s.start + klang.duration);
+  }
+  return { stuecke, ende };
+}
+
+async function rendereDiktat(){
+  const { stuecke, ende } = diktatStuecke();
+  if(!stuecke.length) return null;
+  const sr = audioCtx().sampleRate;
+  const oc = new OfflineAudioContext(1, Math.ceil((ende + 0.4)*sr), sr);
+  stuecke.forEach((s, i) => {
+    const q = oc.createBufferSource();
+    q.buffer = s.klang;
+    const g = oc.createGain();
+    q.connect(g); g.connect(oc.destination);
+    /* Beim Abspielen löst jedes Wort das vorige ab. Damit die Datei genauso
+       klingt, wird hier ebenso abgeschnitten – mit kurzer Blende statt Knacks. */
+    const eigenes = s.start + s.klang.duration;
+    const naechstes = i+1 < stuecke.length ? stuecke[i+1].start : Infinity;
+    const aus = Math.min(eigenes, naechstes);
+    if(aus < eigenes - 0.001){
+      g.gain.setValueAtTime(1, Math.max(s.start, aus - 0.008));
+      g.gain.linearRampToValueAtTime(0, aus);
+    }
+    q.start(s.start);
+    if(Number.isFinite(aus)) q.stop(aus + 0.002);
+  });
+  return oc.startRendering();
+}
+
+/* AudioBuffer als WAV (16 Bit PCM) verpacken. */
+function wavDatei(buf){
+  const kanaele = buf.numberOfChannels, n = buf.length, sr = buf.sampleRate;
+  const daten = n*kanaele*2;
+  const dv = new DataView(new ArrayBuffer(44 + daten));
+  let p = 0;
+  const txt = t => { for(let i=0;i<t.length;i++) dv.setUint8(p++, t.charCodeAt(i)); };
+  const u32 = v => { dv.setUint32(p, v, true); p += 4; };
+  const u16 = v => { dv.setUint16(p, v, true); p += 2; };
+  txt('RIFF'); u32(36 + daten); txt('WAVE');
+  txt('fmt '); u32(16); u16(1); u16(kanaele); u32(sr);
+  u32(sr*kanaele*2); u16(kanaele*2); u16(16);
+  txt('data'); u32(daten);
+  const spuren = [];
+  for(let c=0;c<kanaele;c++) spuren.push(buf.getChannelData(c));
+  for(let i=0;i<n;i++)
+    for(let c=0;c<kanaele;c++){
+      const v = Math.max(-1, Math.min(1, spuren[c][i]));
+      dv.setInt16(p, Math.round(v < 0 ? v*0x8000 : v*0x7FFF), true); p += 2;
+    }
+  return new Blob([dv.buffer], { type:'audio/wav' });
+}
+
+function dateiname(){
+  const stamm = tokens.slice(0,6)
+    .map(t => t.roh.replace(/[^0-9A-Za-zÄÖÜäöüß]+/g,''))
+    .filter(Boolean).join('-').slice(0,60);
+  const takt = einheit === 'syl' ? 'spm' : 'wpm';
+  return ['stenodiktat', stamm, tempo + '-' + takt].filter(Boolean).join('-') + '.wav';
+}
+
+function speichere(blob, name){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 20000);
+}
+
+async function alsAudioSpeichern(){
+  if(!tokens.length || P.busy) return;
+  if(engine !== 'piper'){ status(T().saveNeedsPiper, ''); return; }
+  const worte = I18N[textLang].countdown;
+  const laenge = (el.optCount.checked ? worte.length : 0) + gesamt()/1000;
+  if(laenge > EXPORT_MAX_SEK){ status(T().saveTooLong, ''); return; }
+
+  stop(true);
+  el.save.disabled = true;
+  try{
+    if(!P.ready && !await piperLaden()){ status(T().piperFail, ''); return; }
+    if(!P.prepared && !await piperVorbereiten()){ status(T().ready, ''); return; }
+    status(T().saveWorking, 'hold');
+    await new Promise(r => setTimeout(r, 0));            // Status noch zeichnen lassen
+    const gerendert = await rendereDiktat();
+    if(!gerendert){ status(T().saveFail, ''); return; }
+    speichere(wavDatei(gerendert), dateiname());
+    status(T().saveDone, '');
+  }catch(e){
+    console.error(e);
+    status(T().saveFail, '');
+  }finally{
+    aktualisiereMeta();
+  }
 }
 
 /* ============ Ablauf ============ */
@@ -1109,15 +1349,18 @@ el.engine.addEventListener('change', () => {
   try{ localStorage.setItem('steno.engine', engine); }catch(e){}
   zeigeStimmenfelder();
   if(engine === 'piper') fuellePiperStimmen();
+  aktualisiereMeta();
 });
 
 el.piperVoice.addEventListener('change', () => {
   try{ localStorage.setItem('steno.piper.'+textLang, el.piperVoice.value); }catch(e){}
   if(P.voiceId !== el.piperVoice.value){
-    P.ready = false; P.prepared = false; P.buffers.clear();
+    P.ready = false; P.prepared = false; P.buffers.clear(); P.gerafft.clear();
     piperStatus(T().piperIdle, 0);
   }
 });
+
+el.save.addEventListener('click', alsAudioSpeichern);
 
 el.piperCheck.addEventListener('click', async () => {
   el.piperCheck.disabled = true;
