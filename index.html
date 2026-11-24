@@ -731,7 +731,8 @@ const PIPER_URLS = [
   'https://esm.sh/@mintplex-labs/piper-tts-web@1.0.5'
 ];
 const P = { mod:null, session:null, voiceId:null, ready:false, prepared:false,
-            busy:false, ctx:null, buffers:new Map(), gerafft:new Map(), quelle:null };
+            busy:false, ctx:null, buffers:new Map(), gerafft:new Map(), quelle:null,
+            wach:null };
 
 /* Safari kennt createWritable() nicht: Modellspeicher über IndexedDB nachbilden,
    damit die Stimme nicht bei jedem Besuch neu geladen werden muss. */
@@ -825,14 +826,63 @@ async function piperModul(){
   throw fehler || new Error('module unavailable');
 }
 
+/* resume() liefert ein Promise, das abgelehnt wird, wenn der Browser das
+   Wecken verweigert – etwa Safari ohne Nutzergeste. Ohne catch landet das
+   als unbehandelter Fehler in der Konsole. */
+function wecke(ctx){
+  try{
+    const p = ctx.resume();
+    if(p && p.catch) p.catch(() => {});
+  }catch(e){}
+}
+
 function audioCtx(){
   /* Nach einer Unterbrechung (Tabwechsel, Anruf, iOS) kann der Kontext
      geschlossen sein. Dann bleibt er für immer stumm – also neu anlegen.
      Die dekodierten Puffer hängen nicht am Kontext und bleiben nutzbar. */
-  if(P.ctx && P.ctx.state === 'closed') P.ctx = null;
-  if(!P.ctx) P.ctx = new (window.AudioContext || window.webkitAudioContext)();
-  if(P.ctx.state !== 'running') { try{ P.ctx.resume(); }catch(e){} }
+  if(P.ctx && P.ctx.state === 'closed') { P.ctx = null; P.wach = null; }
+  if(!P.ctx){
+    P.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    /* Schläft er mitten im Diktat ein (Safari tut das gern), sofort wecken. */
+    P.ctx.onstatechange = () => {
+      if(P.ctx && P.ctx.state !== 'running' && (laeuft || zaehltVor)) wecke(P.ctx);
+    };
+  }
+  if(P.ctx.state !== 'running') wecke(P.ctx);
   return P.ctx;
+}
+
+/* Safari legt einen AudioContext schlafen, der eine Weile nichts zu tun hat.
+   Bei Piper liegen zwischen dem Klick und dem ersten Wort aber oft Minuten –
+   Modell laden, Wörter vorrendern – und danach gibt es keine Nutzergeste
+   mehr, mit der man ihn wieder wecken dürfte; das Diktat liefe dann stumm.
+   Also vom Klick an einen lautlosen Dauerton mitlaufen lassen: für den
+   Browser ist der Kontext damit beschäftigt und bleibt wach. */
+function tonWachhalten(){
+  const ctx = audioCtx();
+  if(P.wach) return;
+  try{
+    let q;
+    if(ctx.createConstantSource){
+      q = ctx.createConstantSource();
+    } else {                                   // sehr alte WebKit-Fassungen
+      q = ctx.createBufferSource();
+      q.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+      q.loop = true;
+    }
+    const g = ctx.createGain();
+    g.gain.value = 0;
+    q.connect(g); g.connect(ctx.destination);
+    q.start();
+    P.wach = q;
+  }catch(e){}
+}
+
+function tonSchlafen(){
+  if(!P.wach) return;
+  try{ P.wach.stop(); }catch(e){}
+  try{ P.wach.disconnect(); }catch(e){}
+  P.wach = null;
 }
 
 function piperStatus(text, anteil){
@@ -1319,7 +1369,8 @@ function losgehen(){
   laeuft = true; pausiert = false;
   uhrStart = performance.now() - cum[idx];
   knopfText();
-  status(T().running, 'live');
+  const stumm = engine === 'piper' && P.ctx && P.ctx.state !== 'running';
+  status(stumm ? T().audioBlocked : T().running, stumm ? 'hold' : 'live');
   cancelAnimationFrame(rafId);
   rafId = requestAnimationFrame(tick);
   schritt();
@@ -1357,6 +1408,7 @@ function stop(still){
   cancelAnimationFrame(rafId);
   if(synth){ utterSeq++; synth.cancel(); }
   piperStop();
+  tonSchlafen();
   P.busy = false;
   knopfText();
   if(!still) status(T().ready, '');
@@ -1398,7 +1450,7 @@ document.addEventListener('visibilitychange', () => {
 
 /* ============ Bedienung ============ */
 el.play.addEventListener('click', () => {
-  if(engine === 'piper') audioCtx();          // Tonausgabe im Nutzerklick freischalten (iOS)
+  if(engine === 'piper') tonWachhalten();     // Tonausgabe im Nutzerklick freischalten und wach halten
   if(zaehltVor){ zaehltVor = false; stop(); return; }
   laeuft ? pause() : start();
 });
