@@ -6,10 +6,15 @@ Stenodiktat – ein Diktat-Trainer, der beliebigen Text im gewählten Tempo
 Die gesamte App steckt in einer einzelnen Datei: [`index.html`](index.html).
 Sie läuft komplett im Browser, ohne Server und ohne Build-Schritt.
 
-Mit **Als Audio speichern** lässt sich das fertige Diktat als WAV-Datei
-herunterladen – mit Vorzähler, Tempo und Satzzeichenpausen genau so, wie es
-auch aus dem Lautsprecher käme. Das setzt die Stimmenquelle **Piper** voraus;
-die Systemstimmen des Browsers geben ihr Audio nicht heraus.
+Mit **Als Audio speichern** lässt sich das fertige Diktat als MP3 herunterladen
+– mit Vorzähler, Tempo und Satzzeichenpausen genau so, wie es auch aus dem
+Lautsprecher käme. Das setzt die Stimmenquelle **Piper** voraus (die Vorgabe);
+die Systemstimmen des Browsers geben ihr Audio nicht heraus. Der MP3-Encoder
+wird beim ersten Speichern vom CDN nachgeladen; ist er nicht erreichbar,
+entsteht stattdessen eine WAV-Datei.
+
+Das Häkchen **Text wiederholen** lässt das Diktat nach dem letzten Wort wieder
+von vorn beginnen, bis man pausiert.
 
 ## Ausführen
 
