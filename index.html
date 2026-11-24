@@ -198,7 +198,7 @@
   <div class="tempo">
     <div class="tempo-top">
       <div class="reading">
-        <b id="tempoOut">100</b>
+        <b id="tempoOut">70</b>
         <div class="unitpick" id="unitpick">
           <button data-unit="syl" data-i18n="unitSyl"></button>
           <button data-unit="word" data-i18n="unitWord"></button>
@@ -206,8 +206,8 @@
       </div>
       <div class="presets" id="presets"></div>
     </div>
-    <input type="range" id="tempo" min="20" max="300" step="5" value="100">
-    <div class="scale"><span id="scaleMin">20</span><span id="scaleMid">160</span><span id="scaleMax">300</span></div>
+    <input type="range" id="tempo" min="10" max="200" step="5" value="70">
+    <div class="scale"><span id="scaleMin">10</span><span id="scaleMid">105</span><span id="scaleMax">200</span></div>
   </div>
 
   <section class="block">
@@ -543,9 +543,9 @@ const GRENZEN = { syl:[20,300], word:[10,200] };
 
 let uiLang = (navigator.language||'de').toLowerCase().startsWith('en') ? 'en' : 'de';
 let textLangWahl = 'auto', textLang = 'de';
-let einheit = 'syl';
+let einheit = 'word';
 let engine = 'piper';
-let tempo = 100;
+let tempo = 70;
 let tokens = [], spans = [], cum = [0];
 let idx = 0, laeuft = false, zaehltVor = false, pausiert = false;
 let uhrStart = 0, timer = null, rafId = null, utterSeq = 0;
