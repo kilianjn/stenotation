@@ -30,13 +30,9 @@ python3 -m http.server 8000
 
 ## GitHub Pages einrichten
 
-Einmalig unter **Settings → Pages** die Quelle wählen (das geht nur mit
-Admin-Rechten am Repository, der Workflow kann Pages nicht selbst aktivieren):
-
-- **Source: GitHub Actions** – danach veröffentlicht der Workflow in
-  `.github/workflows/pages.yml` bei jedem Push auf `main`, oder
-- **Source: Deploy from a branch** – Branch wählen, Ordner `/ (root)`.
-
-Danach ist die Seite unter `https://kilianjn.github.io/stenotation/` erreichbar.
+Die Seite liegt unter `https://kilianjn.github.io/stenotation/` und wird von
+GitHub direkt aus dem Branch veröffentlicht: **Settings → Pages → Source:
+Deploy from a branch**, Branch `main`, Ordner `/ (root)`. Jeder Push auf
+`main` erneuert sie, ein eigener Workflow ist dafür nicht nötig.
 
 `.nojekyll` sorgt dafür, dass die Dateien unverändert ausgeliefert werden.
