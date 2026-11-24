@@ -228,6 +228,7 @@
     <h2 data-i18n="hSettings"></h2>
     <div class="opts">
       <label class="opt"><input type="checkbox" id="optCount" checked><span><span data-i18n="optCount"></span><em data-i18n="optCountHint"></em></span></label>
+      <label class="opt"><input type="checkbox" id="optLoop"><span><span data-i18n="optLoop"></span><em data-i18n="optLoopHint"></em></span></label>
       <label class="opt"><input type="checkbox" id="optPunct" checked><span><span data-i18n="optPunct"></span><em data-i18n="optPunctHint"></em></span></label>
       <label class="opt"><input type="checkbox" id="optSpeak"><span><span data-i18n="optSpeak"></span><em data-i18n="optSpeakHint"></em></span></label>
       <label class="opt"><input type="checkbox" id="optFollow" checked><span><span data-i18n="optFollow"></span><em data-i18n="optFollowHint"></em></span></label>
@@ -286,6 +287,9 @@ const I18N = {
     save:"Als Audio speichern",
     saveWorking:"Audiodatei wird erzeugt …", saveDone:"Audiodatei gespeichert",
     saveFail:"Die Audiodatei ließ sich nicht erzeugen.",
+    mp3Encode:p=>"MP3 wird erzeugt … "+p+" %",
+    saveNoMp3:"Der MP3-Encoder ließ sich nicht laden – gespeichert wurde stattdessen eine WAV-Datei.",
+    audioBlocked:"Der Browser hat die Tonausgabe angehalten. Einmal auf „Diktat starten“ tippen, dann kommt der Ton zurück.",
     saveNeedsPiper:"Zum Speichern die Stimmenquelle „Piper“ wählen – Systemstimmen lassen sich nicht aufzeichnen.",
     saveTooLong:"Das Diktat ist länger als 30 Minuten – das ist zu lang für eine Audiodatei.",
     unitSyl:"Silben pro Minute", unitWord:"Wörter pro Minute",
@@ -294,6 +298,7 @@ const I18N = {
     sample:"Beispieltext einsetzen", clear:"Text leeren",
     hSettings:"Einstellungen",
     optCount:"Vorzähler „drei – zwei – eins“", optCountHint:"Drei Sekunden Vorlauf vor dem ersten Wort.",
+    optLoop:"Text wiederholen", optLoopHint:"Beginnt nach dem letzten Wort wieder von vorn, bis du pausierst.",
     optPunct:"Pause an Satzzeichen", optPunctHint:"Kurz bei Komma, länger am Satzende – wie beim echten Diktat.",
     optSpeak:"Satzzeichen ansagen", optSpeakHint:"Liest „Komma“ und „Punkt“ mit vor.",
     optFollow:"Text mitlaufen lassen", optFollowHint:"Scrollt automatisch zum aktuellen Wort.",
@@ -328,6 +333,9 @@ const I18N = {
     save:"Save as audio",
     saveWorking:"Building the audio file …", saveDone:"Audio file saved",
     saveFail:"The audio file could not be created.",
+    mp3Encode:p=>"Encoding MP3 … "+p+" %",
+    saveNoMp3:"The MP3 encoder could not be loaded – saved a WAV file instead.",
+    audioBlocked:"The browser paused audio output. Tap “Start dictation” once and the sound comes back.",
     saveNeedsPiper:"Pick the “Piper” voice source to save audio – system voices cannot be recorded.",
     saveTooLong:"This dictation runs over 30 minutes, which is too long for an audio file.",
     unitSyl:"syllables per minute", unitWord:"words per minute",
@@ -336,6 +344,7 @@ const I18N = {
     sample:"Insert sample text", clear:"Clear text",
     hSettings:"Settings",
     optCount:"Count in “three – two – one”", optCountHint:"Three seconds of lead-in before the first word.",
+    optLoop:"Repeat the text", optLoopHint:"Starts again from the first word until you pause.",
     optPunct:"Pause at punctuation", optPunctHint:"Short at commas, longer at full stops, as in a real dictation.",
     optSpeak:"Read punctuation aloud", optSpeakHint:"Says “comma” and “full stop” as they come up.",
     optFollow:"Follow the text", optFollowHint:"Scrolls to the current word automatically.",
@@ -523,7 +532,7 @@ const el = {
   scaleMin:$('scaleMin'), scaleMid:$('scaleMid'), scaleMax:$('scaleMax'),
   input:$('input'), mWords:$('mWords'), mSyl:$('mSyl'), mDur:$('mDur'),
   sample:$('sampleBtn'), clear:$('clearBtn'), langsw:$('langsw'), save:$('saveBtn'),
-  optCount:$('optCount'), optPunct:$('optPunct'), optSpeak:$('optSpeak'), optFollow:$('optFollow'),
+  optCount:$('optCount'), optLoop:$('optLoop'), optPunct:$('optPunct'), optSpeak:$('optSpeak'), optFollow:$('optFollow'),
   textlang:$('textlang'), detected:$('detected'), voice:$('voice'), noTTS:$('noTTS'), note:$('note'),
   engine:$('engine'), voiceBox:$('voiceBox'), piperBox:$('piperBox'),
   piperVoice:$('piperVoice'), piperLoad:$('piperLoad'), piperCheck:$('piperCheck')
@@ -535,7 +544,7 @@ const GRENZEN = { syl:[20,300], word:[10,200] };
 let uiLang = (navigator.language||'de').toLowerCase().startsWith('en') ? 'en' : 'de';
 let textLangWahl = 'auto', textLang = 'de';
 let einheit = 'syl';
-let engine = 'system';
+let engine = 'piper';
 let tempo = 100;
 let tokens = [], spans = [], cum = [0];
 let idx = 0, laeuft = false, zaehltVor = false, pausiert = false;
@@ -687,7 +696,7 @@ function zeichneUhr(ms){
 
 function tick(){
   if(!laeuft) return;
-  zeichneUhr(Math.min(performance.now() - uhrStart, gesamt()));
+  zeichneUhr(Math.min(Math.max(0, performance.now() - uhrStart), gesamt()));
   rafId = requestAnimationFrame(tick);
 }
 
@@ -817,8 +826,12 @@ async function piperModul(){
 }
 
 function audioCtx(){
+  /* Nach einer Unterbrechung (Tabwechsel, Anruf, iOS) kann der Kontext
+     geschlossen sein. Dann bleibt er für immer stumm – also neu anlegen.
+     Die dekodierten Puffer hängen nicht am Kontext und bleiben nutzbar. */
+  if(P.ctx && P.ctx.state === 'closed') P.ctx = null;
   if(!P.ctx) P.ctx = new (window.AudioContext || window.webkitAudioContext)();
-  if(P.ctx.state === 'suspended') P.ctx.resume();
+  if(P.ctx.state !== 'running') { try{ P.ctx.resume(); }catch(e){} }
   return P.ctx;
 }
 
@@ -1094,7 +1107,7 @@ function diktatStuecke(){
 async function rendereDiktat(){
   const { stuecke, ende } = diktatStuecke();
   if(!stuecke.length) return null;
-  const sr = audioCtx().sampleRate;
+  const sr = exportRate();
   const oc = new OfflineAudioContext(1, Math.ceil((ende + 0.4)*sr), sr);
   stuecke.forEach((s, i) => {
     const q = oc.createBufferSource();
@@ -1116,7 +1129,72 @@ async function rendereDiktat(){
   return oc.startRendering();
 }
 
-/* AudioBuffer als WAV (16 Bit PCM) verpacken. */
+/* ---- MP3 ----
+   Der Mitschnitt geht als MP3 heraus; der Encoder (lamejs, reines JS) wird
+   erst beim ersten Speichern nachgeladen. Klappt das nicht – etwa offline –,
+   bleibt die WAV-Fassung als Rückfall. */
+
+const LAME_URLS = [
+  'https://cdn.jsdelivr.net/npm/@breezystack/lamejs@1.2.7/dist/lamejs.iife.js',
+  'https://unpkg.com/@breezystack/lamejs@1.2.7/dist/lamejs.iife.js'
+];
+/* Abtastraten, die MP3 kennt. */
+const MP3_RATEN = [8000,11025,12000,16000,22050,24000,32000,44100,48000];
+
+function exportRate(){
+  const sr = audioCtx().sampleRate;
+  return MP3_RATEN.indexOf(sr) >= 0 ? sr : 44100;
+}
+
+function skriptLaden(url){
+  return new Promise((fertig, fehler) => {
+    const s = document.createElement('script');
+    s.src = url; s.async = true;
+    s.onload = () => fertig();
+    s.onerror = () => { s.remove(); fehler(new Error(url)); };
+    document.head.appendChild(s);
+  });
+}
+
+async function lameLaden(){
+  if(window.lamejs && window.lamejs.Mp3Encoder) return window.lamejs;
+  for(const url of LAME_URLS){
+    try{
+      await skriptLaden(url);
+      if(window.lamejs && window.lamejs.Mp3Encoder) return window.lamejs;
+    }catch(e){}
+  }
+  return null;
+}
+
+/* AudioBuffer als MP3 (mono, 128 kBit/s). Das Kodieren läuft in Runden mit
+   Atempausen, sonst steht die Oberfläche bei langen Diktaten minutenlang. */
+async function mp3Datei(buf, lame, melde){
+  const n = buf.length, kanal = buf.getChannelData(0);
+  const pcm = new Int16Array(n);
+  for(let i=0;i<n;i++){
+    const v = Math.max(-1, Math.min(1, kanal[i]));
+    pcm[i] = Math.round(v < 0 ? v*0x8000 : v*0x7FFF);
+  }
+  const enc = new lame.Mp3Encoder(1, buf.sampleRate, 128);
+  const teile = [];
+  const BLOCK = 1152, JE_RUNDE = 100;          // ~2,5 s Audio je Runde, ~100 ms Rechenzeit
+  for(let i=0;i<n;i+=BLOCK*JE_RUNDE){
+    const bis = Math.min(n, i + BLOCK*JE_RUNDE);
+    for(let j=i;j<bis;j+=BLOCK){
+      const d = enc.encodeBuffer(pcm.subarray(j, Math.min(j+BLOCK, n)));
+      if(d.length) teile.push(new Uint8Array(d));
+    }
+    if(melde) melde(bis/n);
+    await new Promise(r => setTimeout(r, 0));
+  }
+  const rest = enc.flush();
+  if(rest.length) teile.push(new Uint8Array(rest));
+  return new Blob(teile, { type:'audio/mpeg' });
+}
+
+/* AudioBuffer als WAV (16 Bit PCM) verpacken – Rückfall, wenn der
+   MP3-Encoder nicht erreichbar ist. */
 function wavDatei(buf){
   const kanaele = buf.numberOfChannels, n = buf.length, sr = buf.sampleRate;
   const daten = n*kanaele*2;
@@ -1139,12 +1217,12 @@ function wavDatei(buf){
   return new Blob([dv.buffer], { type:'audio/wav' });
 }
 
-function dateiname(){
+function dateiname(endung){
   const stamm = tokens.slice(0,6)
     .map(t => t.roh.replace(/[^0-9A-Za-zÄÖÜäöüß]+/g,''))
     .filter(Boolean).join('-').slice(0,60);
   const takt = einheit === 'syl' ? 'spm' : 'wpm';
-  return ['stenodiktat', stamm, tempo + '-' + takt].filter(Boolean).join('-') + '.wav';
+  return ['stenodiktat', stamm, tempo + '-' + takt].filter(Boolean).join('-') + '.' + endung;
 }
 
 function speichere(blob, name){
@@ -1171,8 +1249,16 @@ async function alsAudioSpeichern(){
     await new Promise(r => setTimeout(r, 0));            // Status noch zeichnen lassen
     const gerendert = await rendereDiktat();
     if(!gerendert){ status(T().saveFail, ''); return; }
-    speichere(wavDatei(gerendert), dateiname());
-    status(T().saveDone, '');
+    const lame = await lameLaden();
+    if(lame){
+      const blob = await mp3Datei(gerendert, lame,
+        a => status(T().mp3Encode(Math.round(a*100)), 'hold'));
+      speichere(blob, dateiname('mp3'));
+      status(T().saveDone, '');
+    }else{
+      speichere(wavDatei(gerendert), dateiname('wav'));
+      status(T().saveNoMp3, '');
+    }
   }catch(e){
     console.error(e);
     status(T().saveFail, '');
@@ -1184,7 +1270,11 @@ async function alsAudioSpeichern(){
 /* ============ Ablauf ============ */
 function schritt(){
   if(!laeuft) return;
-  if(idx >= tokens.length){ fertig(); return; }
+  if(idx >= tokens.length){
+    if(el.optLoop.checked && tokens.length) wiederhole();
+    else fertig();
+    return;
+  }
   markiere();
   sprich(tokens[idx]);
   const ziel = uhrStart + cum[idx+1];
@@ -1210,6 +1300,19 @@ async function start(){
   }
   if(el.optCount.checked && idx === 0 && !pausiert) vorzaehler(losgehen);
   else losgehen();
+}
+
+/* Wieder von vorn, mit einer Einheit Luft zwischen den Durchläufen, damit
+   das letzte und das erste Wort nicht aneinanderkleben. */
+function wiederhole(){
+  idx = 0;
+  spans.forEach(s => s.className = 'w');
+  markiere();
+  zeichneUhr(0);
+  const luft = 60000/tempo;
+  uhrStart = performance.now() + luft;
+  if(timer){ clearTimeout(timer); timer = null; }
+  timer = setTimeout(() => { if(laeuft) schritt(); }, luft);
 }
 
 function losgehen(){
@@ -1280,6 +1383,18 @@ function springe(neu){
     knopfText();
   }
 }
+
+/* Kommt der Tab aus dem Hintergrund zurück, hat der Browser die Tonausgabe
+   oft angehalten; bei Piper läuft dann alles weiter, nur lautlos. Wieder
+   anwerfen – und wenn das ohne Nutzergeste nicht erlaubt ist, das sagen. */
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState !== 'visible' || engine !== 'piper') return;
+  if(!P.ctx || P.ctx.state === 'running') return;
+  const ctx = audioCtx();
+  setTimeout(() => {
+    if(ctx.state !== 'running' && (laeuft || pausiert)) status(T().audioBlocked, 'hold');
+  }, 400);
+});
 
 /* ============ Bedienung ============ */
 el.play.addEventListener('click', () => {
