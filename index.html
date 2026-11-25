@@ -923,6 +923,46 @@ async function piperLaden(){
   }
 }
 
+/* Piper rendert jedes Wort für sich und legt dabei unterschiedlich viel
+   Stille davor und dahinter – bei „to" über 0,4 Sekunden, bei „us" 0,27.
+   Ungetrimmt hat das zwei Folgen: das Wort setzt zu spät im Takt ein, der
+   Rhythmus wird ruckelig. Und die Zeitraffung rechnet mit der Gesamtdauer
+   samt Stille, staucht also gerade kurze Wörter viel stärker als nötig –
+   die haben das schlechteste Verhältnis von Sprache zu Stille. Darum die
+   Ränder abschneiden, ein wenig Luft stehen lassen und kurz ein- und
+   ausblenden, damit an der Schnittkante nichts knackt. */
+function randStilleKappen(buf){
+  const d = buf.getChannelData(0);
+  let spitze = 0;
+  for(let i=0;i<d.length;i++){ const v = Math.abs(d[i]); if(v > spitze) spitze = v; }
+  if(spitze < 1e-4) return buf;                       // reine Stille: nichts zu holen
+  const schwelle = spitze * 0.01;
+  let von = 0, bis = d.length - 1;
+  while(von < d.length && Math.abs(d[von]) < schwelle) von++;
+  while(bis > von && Math.abs(d[bis]) < schwelle) bis--;
+  if(von >= bis) return buf;
+
+  const sr = buf.sampleRate;
+  const luft = Math.round(sr * 0.020);                // 20 ms Rand stehen lassen
+  von = Math.max(0, von - luft);
+  bis = Math.min(d.length - 1, bis + luft);
+  const laenge = bis - von + 1;
+  if(laenge > d.length - Math.round(sr * 0.02)) return buf;   // lohnt nicht
+
+  const out = audioCtx().createBuffer(buf.numberOfChannels, laenge, sr);
+  const blende = Math.min(Math.round(sr * 0.005), laenge >> 1);
+  for(let c=0;c<buf.numberOfChannels;c++){
+    const ziel = out.getChannelData(c);
+    ziel.set(buf.getChannelData(c).subarray(von, von + laenge));
+    for(let i=0;i<blende;i++){
+      const f = i / blende;
+      ziel[i] *= f;
+      ziel[laenge-1-i] *= f;
+    }
+  }
+  return out;
+}
+
 async function piperVorbereiten(){
   if(!P.ready || !tokens.length) return false;
   const ctx = audioCtx();
@@ -934,7 +974,7 @@ async function piperVorbereiten(){
     if(!P.buffers.has(text)){
       try{
         const wav = await P.session.predict(text);
-        P.buffers.set(text, await ctx.decodeAudioData(await wav.arrayBuffer()));
+        P.buffers.set(text, randStilleKappen(await ctx.decodeAudioData(await wav.arrayBuffer())));
       }catch(e){ P.buffers.set(text, null); }
     }
     i++;
