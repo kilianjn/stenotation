@@ -963,6 +963,39 @@ function randStilleKappen(buf){
   return out;
 }
 
+/* Piper spricht unbetonte Funktionswörter merklich leiser als den Rest:
+   gemessen liegen „of" und „your" rund 4,5 dB unter „and" oder „documents",
+   und zwar reproduzierbar über mehrere Läufe. Beim Diktat zählt aber jedes
+   Wort gleich viel – man muss es mitschreiben können. Darum alle Wörter auf
+   dieselbe Lautheit bringen, mit Deckel gegen Übersteuern. */
+const PEGEL_ZIEL = 0.10;     // angestrebter Effektivwert (RMS)
+const PEGEL_DECKEL = 0.9;    // so laut darf die Spitze höchstens werden
+const PEGEL_HUB = 4;         // und so stark höchstens verstärken
+
+function pegelAngleichen(buf){
+  const d = buf.getChannelData(0);
+  if(!d.length) return buf;
+  let summe = 0, spitze = 0;
+  for(let i=0;i<d.length;i++){
+    const v = d[i];
+    summe += v*v;
+    const a = v < 0 ? -v : v;
+    if(a > spitze) spitze = a;
+  }
+  const rms = Math.sqrt(summe / d.length);
+  if(rms < 1e-5 || spitze < 1e-4) return buf;          // praktisch still
+  let hub = Math.min(PEGEL_HUB, PEGEL_ZIEL / rms);
+  if(spitze * hub > PEGEL_DECKEL) hub = PEGEL_DECKEL / spitze;
+  if(hub > 0.98 && hub < 1.02) return buf;             // lohnt nicht
+
+  const out = audioCtx().createBuffer(buf.numberOfChannels, buf.length, buf.sampleRate);
+  for(let c=0;c<buf.numberOfChannels;c++){
+    const quelle = buf.getChannelData(c), ziel = out.getChannelData(c);
+    for(let i=0;i<quelle.length;i++) ziel[i] = quelle[i]*hub;
+  }
+  return out;
+}
+
 async function piperVorbereiten(){
   if(!P.ready || !tokens.length) return false;
   const ctx = audioCtx();
@@ -974,7 +1007,8 @@ async function piperVorbereiten(){
     if(!P.buffers.has(text)){
       try{
         const wav = await P.session.predict(text);
-        P.buffers.set(text, randStilleKappen(await ctx.decodeAudioData(await wav.arrayBuffer())));
+        const roh = await ctx.decodeAudioData(await wav.arrayBuffer());
+        P.buffers.set(text, pegelAngleichen(randStilleKappen(roh)));
       }catch(e){ P.buffers.set(text, null); }
     }
     i++;
